@@ -1,0 +1,38 @@
+# ============================================================
+# Default Configuration – RLVR Game Level Generation
+# ============================================================
+
+# --- Game ---
+game: "minigrid"
+grid_size: 8
+
+# --- LLM ---
+model_name: "Qwen/Qwen3.5-9B"
+lora_rank: 64
+lora_alpha: 128
+max_new_tokens: 2048
+temperature: 0.8
+
+# --- GRPO ---
+group_size: 4                  # 每個 prompt 取樣幾個關卡
+kl_coeff: 0.05
+learning_rate: 1.0e-5
+batch_size: 16                 # prompts per batch
+num_iterations: 500
+
+# --- Reward ---
+regret_weight: 1.0
+breadth_weight: 0.5
+playability_bonus: 1.0
+invalid_penalty: -1.0
+
+# --- Rollout ---
+num_rollouts_per_agent: 5
+
+# --- Agent ---
+agent_pool_path: "checkpoints/agents/"
+
+# --- Logging ---
+wandb_project: "rlvr-level-gen"
+checkpoint_dir: "checkpoints/"
+log_dir: "logs/"
