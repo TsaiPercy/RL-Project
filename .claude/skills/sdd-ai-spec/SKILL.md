@@ -131,7 +131,10 @@ Once the user provides the edited `AMBIGUITY.md` with Round 1 answers,
 write the first draft of `SPEC.md` AND append a new round of ambiguities
 to `AMBIGUITY.md`. This round adds implementation-level questions:
 
-- **Architecture** — module boundaries, input/output tensor shapes
+- **Architecture** — module boundaries, module independence (can each
+  module be tested alone?), inter-module communication methods (direct
+  call vs callback vs shared artifact), shared types that cross module
+  boundaries, input/output tensor shapes
 - **Data** — formats, preprocessing, augmentation
 - **Infrastructure** — VRAM budget, environment, dependencies
 - **Experiment logistics** — ordering, sanity checks vs full runs
@@ -152,7 +155,8 @@ ambiguity questions in the chat.**
 After updating the spec, evaluate:
 
 > "Do any remaining unanswered questions affect the **structure** of the
-> spec (module boundaries, experiment design, evaluation protocol)?
+> spec (module boundaries, shared types, inter-module communication
+> methods, experiment design, evaluation protocol)?
 > Or are they only about **implementation details** (exact hyperparameters,
 > specific library versions, visualization style)?"
 
@@ -246,18 +250,82 @@ Then list each experiment:
 - **Setup**: Which modules, which data, which config
 
 ## 11. System Architecture & Components
+
+**Design principle: maximize module independence.** Each module should
+be self-contained with a single, well-defined responsibility. Modules
+communicate only through explicitly declared interfaces — never by
+reaching into another module's internals. If two modules need to share
+data, that data type must be defined in a shared types contract.
+
 - Architecture diagram (describe in text; suggest a mermaid diagram)
 - Module list with responsibilities and interfaces
 - Inter-module data flow (what tensor/data shapes cross boundaries)
 
-### Module Specifications
+### 11.1 Shared Types
+
+Define ALL data structures that cross module boundaries in a single
+`types.py` (or equivalent) file. Every type that appears as an input
+or output of more than one module MUST be listed here. This is the
+**contract** between modules — changing a shared type requires updating
+all modules that use it.
+
+```python
+# src/types.py — Shared type definitions
+@dataclass
+class ExampleBatch:
+    """A training batch flowing from DataModule → Model → Loss."""
+    images: Tensor      # (B, C, H, W)
+    labels: Tensor      # (B,)
+    metadata: dict      # per-sample info
+
+@dataclass
+class PredictionResult:
+    """Model output flowing from Model → Evaluator."""
+    logits: Tensor      # (B, num_classes)
+    features: Tensor    # (B, D) — intermediate features for visualization
+```
+
+List each shared type with:
+- Name and fields (with tensor shapes / data types)
+- Which modules produce it
+- Which modules consume it
+- Invariants (e.g., "labels are always 0-indexed integers")
+
+### 11.2 Module Specifications
+
+Design each module to be **independently testable** — it should be
+possible to unit-test a module by mocking its dependencies using only
+the shared types defined in §11.1.
+
 For each module, specify:
 - Class name
-- Input/output types and shapes
-- Key methods
-- Dependencies on other modules
+- **Responsibility** (single sentence — if you need "and", split it)
+- Input types and shapes (reference §11.1 shared types)
+- Output types and shapes (reference §11.1 shared types)
+- Key methods (public API only)
+- Dependencies on other modules (list which modules, and through which
+  shared types they communicate)
 
-### Pseudo Config
+### 11.3 Inter-Module Communication
+
+For every pair of modules that interact, explicitly state:
+
+| From → To | Communication Method | Data Exchanged (Shared Type) | Sync/Async | Notes |
+|---|---|---|---|---|
+| DataModule → Model | function call (forward pass) | `ExampleBatch` | sync | batched |
+| Model → Evaluator | function call | `PredictionResult` | sync | |
+| Trainer → Logger | callback / event | `MetricsDict` | async | fire-and-forget |
+
+Communication methods include:
+- **Direct function call** — simplest; caller invokes callee's public method
+- **Callback / event hook** — for decoupled notifications (e.g., logging, checkpointing)
+- **Shared file / artifact** — for offline handoff between stages (e.g., saved checkpoint → evaluation script)
+- **Config-driven wiring** — modules don't know each other; a top-level script or config connects them
+
+For each pair, justify why this communication method was chosen over
+alternatives.
+
+### 11.4 Pseudo Config
 ```yaml
 # List all adjustable hyperparameters, grouped by module
 module_a:
@@ -300,6 +368,7 @@ project-root/
 ├── configs/
 ├── data/
 ├── src/
+│   ├── types.py        # shared type definitions (§11.1)
 │   ├── models/
 │   ├── datasets/
 │   ├── losses/
@@ -432,3 +501,8 @@ This skill does NOT write any code. The boundary is clean:
 - **Experiment hypotheses come before experiment design**. Each experiment
   exists to test a specific hypothesis. If you can't state the hypothesis,
   the experiment shouldn't exist yet.
+- **Module independence is a first-class concern in §11.** Every module
+  should be independently testable. If Module A cannot be tested without
+  instantiating Module B, the coupling is too tight — refactor by
+  introducing a shared type as the interface. Always define shared types
+  BEFORE specifying individual modules.

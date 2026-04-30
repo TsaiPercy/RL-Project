@@ -552,3 +552,5 @@ Columns:
   interfaces, or behaviors that are not reflected in `SPEC.md`. If
   implementation diverges from spec, update the spec first (following
   the severity levels above), then continue coding.
+- **For deliberate spec revision outside coding**, direct the user
+  to `sdd-ai-spec-update` instead of handling it within this skill.
