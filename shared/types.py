@@ -9,13 +9,13 @@ from torch import Tensor
 
 
 # ---------------------------------------------------------------------------
-# Module 1 – LLM Policy 相關
+# Module A – LLM Policy
 # ---------------------------------------------------------------------------
 
 @dataclass
 class GenerationOutput:
     """LLMPolicy.generate() 的回傳值。"""
-    texts: list[str]            # 生成的原始文字
+    texts: list[str]            # 生成的原始文字（ASCII grid + JSON）
     log_probs: Tensor           # shape (batch, seq_len)
     token_ids: Tensor           # shape (batch, seq_len)
 
@@ -23,34 +23,34 @@ class GenerationOutput:
 @dataclass
 class GRPOBatch:
     """傳入 LLMPolicy.update() 的一個 training batch。"""
-    token_ids: Tensor
-    log_probs: Tensor           # 生成時的 log probs
-    ref_log_probs: Tensor       # reference model 的 log probs
+    token_ids: Tensor           # shape (batch, seq_len)
+    log_probs: Tensor           # 生成時的 log probs, shape (batch, seq_len)
+    ref_log_probs: Tensor       # reference model 的 log probs, shape (batch, seq_len)
     rewards: Tensor             # shape (batch,)
-    advantages: Tensor          # GRPO group-normalized advantages
+    advantages: Tensor          # GRPO group-normalized advantages, shape (batch,)
 
 
 # ---------------------------------------------------------------------------
-# Module 2 – Level Parser & Game Environment 相關
+# Module B – Level Parser & Game Environment
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ParseResult:
     """GameEnvironment.parse_level() 的回傳值。"""
     success: bool
-    level_config: Optional[dict] = None
+    level_config: Optional[dict] = None   # 見 type_examples.py 的 level_config 範例
     error_msg: Optional[str] = None
 
 
 @dataclass
 class Trajectory:
     """單次 agent rollout 的紀錄。"""
-    states: list[np.ndarray]
-    actions: list[int]
-    rewards: list[float]
-    total_return: float
-    success: bool
-    length: int
+    states: list[np.ndarray]    # 每步的 observation (7×7 partially observable)
+    actions: list[int]          # MiniGrid action ids
+    rewards: list[float]        # 每步的 reward
+    total_return: float         # 累計 return
+    success: bool               # 是否通關
+    length: int                 # trajectory 步數
 
 
 @dataclass
@@ -58,37 +58,42 @@ class RolloutResult:
     """GameEnvironment.run_rollouts() 的回傳值。"""
     level_config: dict
     trajectories: dict[str, list[Trajectory]]
-    # key = agent_id (e.g. "strong_0", "weak_0"), value = 該 agent 多次 rollout
+    # key = agent_id (e.g. "strong_0", "weak_0"), value = M 次 rollout
 
 
 # ---------------------------------------------------------------------------
-# Module 3 – Reward Calculator & Evaluation 相關
+# Module C – Reward Calculator & Evaluation
 # ---------------------------------------------------------------------------
 
 @dataclass
 class RewardConfig:
-    """RewardCalculator 的超參數。"""
+    """RewardCalculator 的超參數。Per SPEC §5.2。"""
     regret_weight: float = 1.0
-    breadth_weight: float = 0.5
     playability_bonus: float = 1.0
     invalid_penalty: float = -1.0
+    # strategy_breadth_weight: float = 0.0  # [deferred] — PD-1
 
 
 @dataclass
 class RewardOutput:
-    """RewardCalculator.compute_reward() 的回傳值。"""
+    """RewardCalculator.compute_reward() 的回傳值。Per SPEC §5.2。"""
     total_reward: float
-    regret: float
-    strategy_breadth: float
-    playable: bool
+    regret: float               # max(0, mean(V_strong) - mean(V_weak))
+    playable: bool              # 至少一個 agent 通關
     breakdown: dict = field(default_factory=dict)
 
 
 @dataclass
 class EvalReport:
-    """EvaluationSuite.evaluate() 的回傳值。"""
-    playability_rate: float
-    held_out_regret: dict       # mean, median, std, >threshold %
-    solution_diversity: dict    # mean JSD across trajectories
-    controllability: dict       # per-dimension Cohen's d (Phase 2+)
+    """EvaluationSuite.evaluate() 的回傳值。Per SPEC §8。"""
+    # --- 主要指標 ---
+    parse_success_rate: float       # LLM 輸出成功解析為合法關卡的比例
+    playability_rate: float         # 可通關關卡佔所有合法關卡的比例
+    held_out_regret: dict           # {"mean": float, "median": float, "std": float}
+    # --- 次要指標 (deferred) ---
+    solution_diversity: Optional[dict] = None   # [deferred] — PD-5
+    controllability: Optional[dict] = None      # Phase 2+ — SPEC §8
+    # --- 元資料 ---
+    eval_mode: str = "full"         # "quick" (training agents) or "full" (held-out agents)
+    num_levels: int = 0             # 評估的關卡總數
     raw_data: list[dict] = field(default_factory=list)
