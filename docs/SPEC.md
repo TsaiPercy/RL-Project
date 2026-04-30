@@ -336,6 +336,116 @@ LLMPolicy.update(GRPOBatch)
     → dict (loss, kl, mean_reward)
 ```
 
+### 11.1 Shared Types (`shared/types.py`)
+
+所有跨模組邊界的資料結構定義在 `shared/types.py`，作為模組間的 **contract**。修改任何 shared type 時須同步更新所有使用該 type 的模組。範例實例見 `shared/type_examples.py`。
+
+```python
+# shared/types.py — Shared type definitions
+
+# ---------------------------------------------------------------------------
+# Module A – LLM Policy
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GenerationOutput:
+    """LLMPolicy.generate() 的回傳值。"""
+    texts: list[str]            # 生成的原始文字（ASCII grid + JSON）
+    log_probs: Tensor           # shape (batch, seq_len) — 每個 token 的 log prob
+    token_ids: Tensor           # shape (batch, seq_len)
+
+
+@dataclass
+class GRPOBatch:
+    """傳入 LLMPolicy.update() 的一個 training batch。"""
+    token_ids: Tensor           # shape (batch, seq_len)
+    log_probs: Tensor           # 生成時的 log probs, shape (batch, seq_len)
+    ref_log_probs: Tensor       # reference model 的 log probs, shape (batch, seq_len)
+    rewards: Tensor             # shape (batch,)
+    advantages: Tensor          # GRPO group-normalized advantages, shape (batch,)
+
+
+# ---------------------------------------------------------------------------
+# Module B – Level Parser & Game Environment
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ParseResult:
+    """GameEnvironment.parse_level() 的回傳值。"""
+    success: bool
+    level_config: Optional[dict] = None   # 見 type_examples.py 的 level_config 範例
+    error_msg: Optional[str] = None
+
+
+@dataclass
+class Trajectory:
+    """單次 agent rollout 的紀錄。"""
+    states: list[np.ndarray]    # 每步的 observation (7×7×3 partially observable)
+    actions: list[int]          # MiniGrid action ids (0-6)
+    rewards: list[float]        # 每步的 reward
+    total_return: float         # 累計 return
+    success: bool               # 是否通關
+    length: int                 # trajectory 步數
+
+
+@dataclass
+class RolloutResult:
+    """GameEnvironment.run_rollouts() 的回傳值。"""
+    level_config: dict
+    trajectories: dict[str, list[Trajectory]]
+    # key = agent_id (e.g. "strong_0", "weak_0"), value = M 次 rollout
+
+
+# ---------------------------------------------------------------------------
+# Module C – Reward Calculator & Evaluation
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RewardConfig:
+    """RewardCalculator 的超參數。Per SPEC §5.2。"""
+    regret_weight: float = 1.0
+    playability_bonus: float = 1.0
+    invalid_penalty: float = -1.0
+    # strategy_breadth_weight: float = 0.0  # [deferred] — PD-1
+
+
+@dataclass
+class RewardOutput:
+    """RewardCalculator.compute_reward() 的回傳值。Per SPEC §5.2。"""
+    total_reward: float
+    regret: float               # max(0, mean(V_strong) - mean(V_weak))
+    playable: bool              # 至少一個 agent 通關
+    breakdown: dict = field(default_factory=dict)
+
+
+@dataclass
+class EvalReport:
+    """EvaluationSuite.evaluate() 的回傳值。Per SPEC §8。"""
+    parse_success_rate: float       # LLM 輸出成功解析為合法關卡的比例
+    playability_rate: float         # 可通關關卡佔所有合法關卡的比例
+    held_out_regret: dict           # {"mean": float, "median": float, "std": float}
+    solution_diversity: Optional[dict] = None   # [deferred]
+    controllability: Optional[dict] = None      # Phase 2+
+    eval_mode: str = "full"         # "quick" or "full"
+    num_levels: int = 0
+    raw_data: list[dict] = field(default_factory=list)
+```
+
+#### 各 Shared Type 的生產者 / 消費者 / 不變量
+
+| Shared Type | 生產者 (Producer) | 消費者 (Consumer) | 不變量 (Invariants) |
+|---|---|---|---|
+| `GenerationOutput` | Module A: `LLMPolicy.generate()` | `train.py`（傳給 Module B） | `texts`, `log_probs`, `token_ids` 長度一致 = batch_size × group_size；`log_probs` 與 `token_ids` 的 seq_len 維度一致 |
+| `GRPOBatch` | `train.py`（組裝） | Module A: `LLMPolicy.update()` | 所有 Tensor 的 batch 維度一致；`advantages` 經過 group-wise z-score normalization |
+| `ParseResult` | Module B: `GameEnvironment.parse_level()` | Module B: `run_rollouts()`（取 `level_config`）, `train.py` | `success=True` 時 `level_config` 非 None 且通過全部驗證；`success=False` 時 `error_msg` 非 None |
+| `Trajectory` | Module B: `GameEnvironment.run_rollouts()` | Module C: `RewardCalculator` | `length = len(actions) = len(rewards) = len(states)`；`total_return = sum(rewards)`；`actions` 值域 0-6（MiniGrid action space） |
+| `RolloutResult` | Module B: `GameEnvironment.run_rollouts()` | Module C: `RewardCalculator`, `EvaluationSuite` | `trajectories` 的每個 agent_id 對應 `num_rollouts_per_agent` 條 `Trajectory`；`level_config` 與 `ParseResult.level_config` 一致 |
+| `RewardConfig` | `config/default.yaml`（載入） | Module C: `RewardCalculator` | `invalid_penalty < 0`；`playability_bonus ≥ 0`；`regret_weight ≥ 0` |
+| `RewardOutput` | Module C: `RewardCalculator.compute_reward()` | `train.py`（取 `total_reward` 計算 advantages） | `regret ≥ 0`（已 clamp）；若 `playable=False` 且非解析失敗則 `total_reward = 0.0`；若解析失敗則 `total_reward = invalid_penalty` |
+| `EvalReport` | Module C: `EvaluationSuite.evaluate()` | `evaluate.py`, wandb logging | `0 ≤ parse_success_rate, playability_rate ≤ 1`；`eval_mode ∈ {"quick", "full"}`；`num_levels > 0` |
+
+### 11.2 Module Specifications
+
 ### Module A: LLM Policy (`llm_policy/`)
 
 **Class**: `LLMPolicy`
@@ -349,6 +459,9 @@ LLMPolicy.update(GRPOBatch)
   - `token_ids: Tensor (batch, seq_len)`
 - `get_ref_log_probs(token_ids: Tensor) → Tensor (batch, seq_len)`
 - `update(grpo_batch: GRPOBatch) → dict`
+
+**消費的 Shared Types**: `GRPOBatch`（from `train.py`）
+**生產的 Shared Types**: `GenerationOutput`
 
 **關鍵配置**: QLoRA 4-bit, LoRA rank=64, alpha=128, target modules: q/k/v/o/gate/up/down_proj
 
@@ -371,6 +484,9 @@ LLMPolicy.update(GRPOBatch)
 - `run_rollouts(level_config: dict, num_rollouts_per_agent: int) → RolloutResult`
   - 使用 SubprocVecEnv 平行化 rollout
 - `batch_evaluate(llm_outputs: list[str], num_rollouts_per_agent: int) → list[RolloutResult | None]`
+
+**消費的 Shared Types**: `GenerationOutput.texts`（from Module A via `train.py`）
+**生產的 Shared Types**: `ParseResult`, `Trajectory`, `RolloutResult`
 
 **依賴**: MiniGrid ≥2.3, MiniHack ≥0.1.5 (Phase 3), BabyAI
 
@@ -397,6 +513,9 @@ LLMPolicy.update(GRPOBatch)
   - `mode="full"`: 使用 held-out agents
 - `export_report(report: EvalReport, path: str)`
 
+**消費的 Shared Types**: `RolloutResult`, `Trajectory`, `RewardConfig`
+**生產的 Shared Types**: `RewardOutput`, `EvalReport`
+
 **依賴**: NumPy, SciPy, wandb
 
 **子模組**:
@@ -405,14 +524,20 @@ LLMPolicy.update(GRPOBatch)
 - `metrics.py` — 各項指標實作
 - `visualization.py` — 圖表生成
 
-### Shared Types (`shared/types.py`)
+### 11.3 Inter-Module Communication
 
-所有模組共用的 dataclass：
-- `GenerationOutput`, `GRPOBatch` — Module A
-- `ParseResult`, `Trajectory`, `RolloutResult` — Module B
-- `RewardConfig`, `RewardOutput`, `EvalReport` — Module C
+| From → To | 通訊方式 | 交換的 Shared Type | Sync/Async | 備註 |
+|---|---|---|---|---|
+| Module A → Module B | 間接（via `train.py` function call） | `GenerationOutput.texts` → `str` | sync | `train.py` 取出 texts 傳給 `batch_evaluate()` |
+| Module B → Module C | 間接（via `train.py` function call） | `RolloutResult` | sync | `train.py` 取出 rollouts 傳給 `compute_batch_rewards()` |
+| Module C → Module A | 間接（via `train.py` 組裝 `GRPOBatch`） | `RewardOutput.total_reward` → `GRPOBatch` | sync | `train.py` 從 rewards 計算 advantages，組裝 `GRPOBatch` |
+| Module A → Module A | 內部 function call | `GenerationOutput.token_ids` → ref_log_probs | sync | `get_ref_log_probs()` 計算 KL penalty 所需 |
+| Module C → wandb | callback / event | `EvalReport`, metrics dict | async | fire-and-forget logging |
+| Config → All Modules | config-driven wiring | `RewardConfig`, hyperparams | — | `train.py` 載入 YAML 後分配給各模組 |
 
-### Pseudo Config
+**設計選擇說明**：所有模組間通訊均透過 `train.py` 中介，模組之間不直接互相呼叫。這確保每個模組可獨立測試——只需用 shared types 建立 mock 即可。
+
+### 11.4 Pseudo Config
 
 ```yaml
 # === Game ===
