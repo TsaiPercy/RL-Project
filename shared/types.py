@@ -97,3 +97,14 @@ class EvalReport:
     eval_mode: str = "full"         # "quick" (training agents) or "full" (held-out agents)
     num_levels: int = 0             # 評估的關卡總數
     raw_data: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class MetricsResult:
+    """metrics.py 計算的指標彙總。供 evaluate.py 及 EvaluationSuite 使用。"""
+    parse_success_rate: float       # 0~1，成功解析數 / 總數
+    playability_rate: float         # 0~1，可通關數 / 成功解析數
+    regret_stats: dict              # {"mean": float, "median": float, "std": float}
+    total_levels: int               # 關卡總數
+    parsed_levels: int              # 成功解析的關卡數
+    playable_levels: int            # 可通關的關卡數

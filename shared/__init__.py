@@ -7,6 +7,7 @@ from .types import (
     RewardConfig,
     RewardOutput,
     EvalReport,
+    MetricsResult,
 )
 
 __all__ = [
@@ -18,4 +19,6 @@ __all__ = [
     "RewardConfig",
     "RewardOutput",
     "EvalReport",
+    "MetricsResult",
 ]
+
