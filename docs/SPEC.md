@@ -120,13 +120,45 @@ L = -E[advantage * log π(y|x)] + kl_coeff * KL(π || π_ref)
 - Held-out agents（後 2 個）僅用於完整 evaluation，避免 overfitting
 - 強/弱 agent 的具體區分方式依 BabyAI 可用的 pretrained checkpoint 決定
 
-### 5.5 三階段計畫
+#### 5.4.1 Toy Case Agent Pool [added]
+
+Phase 0 使用 SB3 PPO 自行訓練的 agent，用於 pipeline smoke test。訓練環境為 MiniGrid `DoorKeyEnv(size=13)`。
+
+| Agent ID | 來源 | 類型 | 用途 |
+|----------|------|------|------|
+| `toy_strong_0` | SB3 PPO on DoorKeyEnv(size=13), 充分訓練 | 強 agent | Toy case reward |
+| `toy_weak_0` | SB3 PPO on DoorKeyEnv(size=13), 較少訓練步數 | 弱 agent | Toy case reward |
+
+- 強 agent：PPO 訓練至收斂（success rate > 90% on DoorKeyEnv）
+- 弱 agent：PPO 提前停止訓練（success rate ~30-60% on DoorKeyEnv）
+- 兩者均使用 MiniGrid 的 `ImgObsWrapper`（fully observable image observation）或 `RGBImgPartialObsWrapper`（7×7 partial obs），依實際相容性決定
+- 這些 agent 訓練於 DoorKeyEnv 的固定結構（key + locked door + goal），在 LLM 生成的自定義地圖上可能泛化能力有限——這對 smoke test 而言是可接受的，目的是驗證 pipeline 資料流，而非 agent 品質
+
+### 5.5 階段計畫 [updated]
+
+<!-- before: 三階段計畫（Phase 1-3） -->
 
 | Phase | 環境 | 目標 | 時間 |
 |-------|------|------|------|
+| **Phase 0** [added] | MiniGrid DoorKeyEnv(size=13) | **Toy case**: SB3 PPO agent 訓練 + LLM zero-shot 生成 + 全 pipeline smoke test | Pre-Week 1 |
 | Phase 1 | MiniGrid 15×15 (13×13 usable) | Zero-shot / Few-shot baseline，pipeline 跑通 | Week 1 |
 | Phase 2 | MiniGrid 15×15 (13×13 usable) | GRPO 訓練，驗證 RL 微調有效 | Week 2 |
 | Phase 3 | MiniHack | 擴展到更複雜環境，驗證可擴展性 | Week 3 |
+
+#### Phase 0 詳細說明 [added]
+
+**目的**：以最低成本跑通整個 pipeline（LLM 生成 → 解析 → 環境構建 → Agent rollout → Reward 計算），驗證模組間資料流正確，不追求結果品質。
+
+**流程**：
+1. 在 `DoorKeyEnv(size=13)` 上訓練 SB3 PPO agent（strong: 充分訓練; weak: 提前停止）
+2. 用 LLM（Qwen3.5-Coder-9B）zero-shot 生成少量地圖（~10-20 張）
+3. 將 LLM 生成的地圖送入 parser → 構建 MiniGrid 環境 → 用 toy agent 跑 rollout → 計算 reward
+4. 驗證各模組的輸入輸出符合 shared types contract
+
+**成功標準**：
+- SB3 PPO strong agent 在 DoorKeyEnv 上 success rate > 90%
+- Pipeline 端到端不報錯（即使 LLM 生成的地圖 parse rate 低、agent 表現差）
+- 各模組產出的 dataclass 欄位完整且型別正確
 
 ## 6. Method Scope
 
@@ -218,6 +250,15 @@ L = -E[advantage * log π(y|x)] + kl_coeff * KL(π || π_ref)
 - **Strong agent**：BabyAI 完整訓練的 agent
 - **Weak agent**：BabyAI 較弱的 agent（較少訓練步數或較簡單架構）
 
+#### Toy Case Agent Pool [added]
+
+- **來源**：SB3 PPO 自行訓練（MiniGrid `DoorKeyEnv(size=13)`）
+- **訓練環境**：`MiniGrid-DoorKey-13x13-v0`（agent 需撿鑰匙 → 開門 → 到達 goal）
+- **Strong agent**：PPO 訓練至收斂（~500K-1M steps），DoorKeyEnv success rate > 90%
+- **Weak agent**：PPO 提前停止（~50K-100K steps），DoorKeyEnv success rate ~30-60%
+- **儲存位置**：`checkpoints/agents/toy_strong_0.zip`, `checkpoints/agents/toy_weak_0.zip`
+- **注意**：這些 agent 僅用於 Phase 0 pipeline smoke test，不用於正式實驗
+
 ### Evaluation Data
 
 - 評估時由 LLM 生成 100 個關卡
@@ -240,13 +281,28 @@ L = -E[advantage * log π(y|x)] + kl_coeff * KL(π || π_ref)
 - **CH3**：Training regret 上升但 held-out regret 不上升（→ overfitting to training agents）
 - **CH4**：LLM mode collapse，生成高度重複的關卡（→ 需要 diversity 機制）
 
-### Experiment Ordering
+### Experiment Ordering [updated]
 
-採用 **(a) build full pipeline first then ablate** 策略：
-- 理由：三週時間有限，先確保 pipeline 端到端可跑通（Phase 1），再進行 GRPO 訓練（Phase 2），最後擴展與消融（Phase 3）
-- 風險：如果核心假設（H1）不成立，會浪費 pipeline 建設時間。以 sanity check 實驗緩解。
+<!-- before: 採用 (a) build full pipeline first then ablate 策略，Phase 1 → 2 → 3 -->
+採用 **(a) build full pipeline first then ablate** 策略，但在正式 Phase 1 之前先執行 **Phase 0 Toy Case** 以最低成本驗證 pipeline 資料流：
+- Phase 0（Toy Case）：訓練 SB3 PPO agent + LLM zero-shot + 全 pipeline smoke test
+- Phase 1：Zero-shot / Few-shot baseline（BabyAI agents）
+- Phase 2：GRPO 訓練
+- Phase 3：MiniHack 擴展
+- 風險：如果核心假設（H1）不成立，會浪費 pipeline 建設時間。以 Phase 0 toy case + sanity check 實驗緩解。
 
 ### 實驗列表
+
+#### Experiment T: Toy Case — Pipeline Smoke Test (Phase 0) [added]
+- **Hypothesis**: 全 pipeline（LLM 生成 → Parser → MiniGrid 環境 → SB3 Agent rollout → Reward 計算）可端到端跑通，各模組間資料流符合 shared types contract
+- **Expected result**: Pipeline 不報錯；SB3 PPO strong agent 在 DoorKeyEnv 上 success rate > 90%；LLM 生成的地圖至少部分可解析（parse rate 不限）
+- **If violated**: 若 pipeline 資料流有斷裂 → 修復模組介面；若 SB3 agent 訓練失敗 → 檢查環境 wrapper 與超參數
+- **Setup**:
+  1. 訓練 SB3 PPO（strong + weak）on `MiniGrid-DoorKey-13x13-v0`
+  2. LLM zero-shot 生成 10-20 張地圖
+  3. 完整 pipeline：parse → build env → agent rollout → reward 計算
+  4. 驗證所有 shared type dataclass 欄位正確
+- **不追求**: agent 在 LLM 地圖上的表現品質、regret 的意義性
 
 #### Experiment 0: Sanity Check — LLM 結構化輸出能力
 - **Hypothesis**: Qwen3.5-Coder-9B 在 zero-shot 下能生成 parse-valid 的 MiniGrid ASCII grid + JSON（rate > 10%）
@@ -585,6 +641,23 @@ held_out_agents:
   - strong_held_0                   # BabyAI pretrained strong (held-out)
   - weak_held_0                     # BabyAI pretrained weak (held-out)
 
+# === Toy Case (Phase 0) === [added]
+toy_case:
+  train_env: "MiniGrid-DoorKey-13x13-v0"
+  strong_agent_steps: 1_000_000       # PPO training steps for strong agent
+  weak_agent_steps: 50_000            # PPO training steps for weak agent (early stop)
+  toy_agents:
+    - toy_strong_0
+    - toy_weak_0
+  num_test_levels: 20                 # LLM zero-shot levels for smoke test
+  ppo_hyperparams:
+    learning_rate: 3.0e-4
+    n_steps: 2048
+    batch_size: 64
+    n_epochs: 10
+    gamma: 0.99
+    ent_coef: 0.01
+
 # === Evaluation ===
 eval_num_levels: 100                # levels per evaluation
 eval_interval: 50                   # evaluate every N iterations
@@ -596,6 +669,33 @@ log_dir: "logs/"
 ```
 
 ## 12. Experiment Implementation Architecture
+
+### Experiment T: Toy Case — Pipeline Smoke Test [added]
+
+```
+# Step 1: Train SB3 PPO agents
+train_ppo("MiniGrid-DoorKey-13x13-v0", total_timesteps=1_000_000) → toy_strong_0.zip
+train_ppo("MiniGrid-DoorKey-13x13-v0", total_timesteps=50_000)    → toy_weak_0.zip
+
+# Step 2: LLM zero-shot generation
+LLMPolicy.generate(prompts) → texts  (10-20 levels)
+
+# Step 3: Full pipeline
+for text in texts:
+    ParseResult = GameEnvironment.parse_level(text)
+    if ParseResult.success:
+        RolloutResult = GameEnvironment.run_rollouts(
+            level_config, agents=[toy_strong_0, toy_weak_0], num_rollouts=5)
+        RewardOutput = RewardCalculator.compute_reward(RolloutResult)
+
+# Step 4: Verify
+assert all shared type fields are present and correctly typed
+```
+
+- 使用模組：A（generate only, 不 update）, B（完整）, C（compute_reward only）
+- Agent：SB3 PPO（自行訓練），非 BabyAI
+- 目的：驗證 pipeline 資料流，不追求結果品質
+- 預計耗時：agent 訓練 ~30 min（DoorKeyEnv 較簡單），pipeline 跑通 ~10 min
 
 ### Experiment 0: Sanity Check
 
@@ -756,10 +856,13 @@ project/
 │   └── type_examples.py     # Dataclass 範例實例
 ├── baselines/               # Baseline 腳本
 │   └── run_baseline.py      # Zero-shot / Few-shot baseline
+├── toy_case/                # [added] Phase 0: Toy Case 腳本
+│   ├── train_agent.py       # SB3 PPO agent 訓練（DoorKeyEnv）
+│   └── run_toy_pipeline.py  # 端到端 pipeline smoke test
 ├── train.py                 # 主訓練迴圈（Module A 整合 B + C）
 ├── evaluate.py              # 獨立評估腳本（quick + full 模式）
 ├── checkpoints/             # Model & agent checkpoints
-│   └── agents/              # BabyAI 預訓練 agent checkpoints
+│   └── agents/              # BabyAI 預訓練 + toy case agent checkpoints
 ├── logs/                    # 訓練日誌
 ├── results/                 # 實驗結果與報告
 ├── docs/                    # 文件

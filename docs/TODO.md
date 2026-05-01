@@ -34,6 +34,18 @@
 | D-3 | 驗證 BabyAI agent 在隨機 MiniGrid 13×13 關卡上的表現 | ☐ | Strong win rate 應 > 80%；Per SPEC §6 |
 | D-4 | 撰寫 LLM 輸出範例（ASCII grid + JSON，≥10 筆） | ☐ | 供 Parser 開發使用；Per SPEC §3 |
 
+## Phase 0: Toy Case — Pipeline Smoke Test [added]
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| TC-1 | 實作 `toy_case/train_agent.py` — SB3 PPO 訓練腳本（DoorKeyEnv(size=13)） | ☐ | Per SPEC §5.4.1；含 strong/weak 兩種訓練配置 |
+| TC-2 | 訓練 toy_strong_0：PPO on `MiniGrid-DoorKey-13x13-v0`，~1M steps，目標 success rate > 90% | ☐ | 儲存至 `checkpoints/agents/toy_strong_0.zip` |
+| TC-3 | 訓練 toy_weak_0：PPO on `MiniGrid-DoorKey-13x13-v0`，~50K steps，目標 success rate ~30-60% | ☐ | 儲存至 `checkpoints/agents/toy_weak_0.zip` |
+| TC-4 | 驗證 strong/weak agent 表現差異（在 DoorKeyEnv 上跑 100 episodes，確認 success rate 差距明顯） | ☐ | Strong > 90%, Weak 30-60% |
+| TC-5 | LLM zero-shot 生成 10-20 張地圖（使用 Experiment 0 的 LLM + prompt） | ☐ | 依賴 S-1, S-2 或可用簡化版 LLM 呼叫 |
+| TC-6 | 實作 `toy_case/run_toy_pipeline.py` — 端到端 pipeline smoke test | ☐ | parse → env → rollout(toy agents) → reward；Per SPEC §12 Exp T |
+| TC-7 | 執行 toy pipeline，驗證各 shared type dataclass 欄位正確 | ☐ | Pipeline 不報錯即為成功；Per SPEC §11.1 |
+
 ## Sanity Checks
 
 | # | Task | Status | Notes |
