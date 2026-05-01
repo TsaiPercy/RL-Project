@@ -125,6 +125,22 @@ Apply changes to `SPEC.md` following these rules:
   New sections go at the most logical position with a new number
   or sub-number (e.g., §5.1).
 
+### Module spec checklist (§11.2)
+
+If the change involves **adding or modifying a module** in §11.2, verify
+that the module entry includes a **Unit test cases** section before saving.
+Each test case should state: given (mock inputs) → assert (expected output)
+→ failure mode it guards against. Minimum coverage: happy path, one edge
+case, one invalid input. If the user's request doesn't include test cases,
+flag it explicitly:
+
+> "You're adding/modifying a module spec. The §11.2 format requires a
+> **Unit test cases** list. Please provide at least 3 test cases, or I
+> can draft placeholders for you to fill in."
+
+Do not silently omit the unit test cases section — an incomplete module
+spec is a spec defect.
+
 ### Per operation type
 
 **Modify:**

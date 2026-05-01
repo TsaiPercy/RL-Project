@@ -305,6 +305,20 @@ For each module, specify:
 - Key methods (public API only)
 - Dependencies on other modules (list which modules, and through which
   shared types they communicate)
+- **Unit test cases** — list the specific test cases that should be written
+  for this module. Each entry should state: what is given (mock inputs),
+  what is asserted (expected output or behaviour), and what failure mode
+  it guards against. At minimum, cover: (1) the happy path, (2) at least
+  one edge case or boundary condition, (3) one invalid/malformed input.
+  Example:
+  ```
+  - test_forward_correct_shape: given a valid ExampleBatch, assert output
+    logits have shape (B, num_classes). Guards against shape regression.
+  - test_forward_empty_batch: given B=0, assert no crash and empty output.
+    Guards against edge case in downstream evaluation loop.
+  - test_invalid_input_type: given non-tensor input, assert ValueError raised.
+    Guards against silent type coercion bugs.
+  ```
 
 ### 11.3 Inter-Module Communication
 
@@ -409,6 +423,16 @@ single place to revisit open decisions when they're ready.
 | I-2 | Write environment.yml / requirements.txt | ☐ | Per spec §15 |
 | I-3 | Write base config.yaml with all hyperparams | ☐ | Per spec §11 pseudo config |
 | I-4 | Implement visualization scripts | ☐ | Per spec §13 |
+| I-5 | Set up test runner (pytest config, fixtures for shared types) | ☐ | Per spec §11.1 |
+
+## Unit Tests
+One task per module. Implement ALL test cases listed in that module's §11.2
+entry. Tick off only when every listed test case passes.
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| T-1 | Write unit tests for [ModuleA] | ☐ | Per spec §11.2 test cases |
+| T-2 | Write unit tests for [ModuleB] | ☐ | Per spec §11.2 test cases |
 
 ## Data Preparation
 | # | Task | Status | Notes |
