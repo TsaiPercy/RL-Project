@@ -96,15 +96,28 @@ should always be executed in order.
 
 ### IMPLEMENT_RECORD.md
 
-This file is the log of all autonomous decisions. Create it on the first
-coding session if it doesn't exist. Append to it after each execution.
+This file is the log of all autonomous decisions and completed work.
+Create it on the first coding session if it doesn't exist. Append to it
+after each execution.
+
+For the **Tasks Completed** table, copy each task's description verbatim
+from `TODO.md` — do not summarize or paraphrase. This ensures the record
+is self-contained and readable without cross-referencing TODO.md.
+
 Format:
 
 ```markdown
 # Implementation Record
 
 ## Session: [date or session number]
-Tasks completed: I-1, I-2, I-3, I-4
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| I-1 | Initialize project directory structure | ☑ |
+| I-2 | Set up conda environment and dependencies | ☑ |
+| I-3 | Create default config.yaml with all hyperparameters | ☑ |
+| I-4 | Implement dataset loader with augmentation pipeline | ☑ |
 
 ### Decisions Made
 | Task | Decision | Rationale |
