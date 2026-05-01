@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**RLVR Game Level Generation** — 強化學習期末專案。使用 GRPO 微調 Qwen3.5-Coder-9B，使其生成 MiniGrid（Phase 1-2）和 MiniHack（Phase 3）遊戲關卡。訓練信號完全來自 game agent 的遊玩表現，不使用人類資料。
+**RLVR Game Level Generation** — 強化學習期末專案。使用 GRPO 微調 Qwen3.5-9B，使其生成 MiniGrid（Phase 1-2）和 MiniHack（Phase 3）遊戲關卡。訓練信號完全來自 game agent 的遊玩表現，不使用人類資料。
 
 ## Architecture
 

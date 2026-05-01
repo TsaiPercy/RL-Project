@@ -3,13 +3,74 @@
 所有座標遵循 SPEC §3：13×13 usable grid，座標範圍 0-12。
 """
 
+import torch
+
 from shared.types import (
+    GenerationOutput,
+    GRPOBatch,
     ParseResult,
     RolloutResult,
     RewardConfig,
     RewardOutput,
     EvalReport,
+    MetricsResult,
 )
+
+# ===================================================================
+# GenerationOutput 範例 — LLMPolicy.generate() 的回傳值
+# ===================================================================
+# texts 欄位為 LLM 生成的原始文字，格式對應 prompts.py 中定義的輸出規範
+
+_example_llm_output_text = """\
+Grid:
+WWWWWWWWWWWWW
+W...........W
+W...........W
+W..WWWWW....W
+W..W........W
+W..W........W
+W...........W
+W......WWWW.W
+W...........W
+W...........W
+W...........W
+W...........W
+WWWWWWWWWWWWW
+
+{
+  "objects": [
+    {"type": "key", "x": 2, "y": 1, "color": "yellow"},
+    {"type": "door", "x": 6, "y": 3, "color": "yellow"},
+    {"type": "ball", "x": 5, "y": 5, "color": "red"},
+    {"type": "box", "x": 10, "y": 8, "color": "grey", "contains": {"type": "key", "color": "blue"}},
+    {"type": "lava", "x": 4, "y": 9},
+    {"type": "goal", "x": 11, "y": 11}
+  ],
+  "agent_start": {"x": 1, "y": 1, "dir": 1}
+}"""
+
+generation_output_example = GenerationOutput(
+    texts=[_example_llm_output_text],       # batch=1 的範例
+    log_probs=torch.randn(1, 128),          # shape (batch=1, seq_len=128) 示意
+    token_ids=torch.randint(0, 32000, (1, 128)),  # shape (batch=1, seq_len=128) 示意
+    prompt_ids=torch.randint(0, 32000, (1, 64)),  # shape (batch=1, prompt_len=64) 示意
+)
+
+
+# ===================================================================
+# GRPOBatch 範例 — LLMPolicy.update() 的輸入
+# ===================================================================
+# 需要真實的 token_ids / log_probs / advantages，這裡僅展示結構。
+#
+# grpo_batch_example = GRPOBatch(
+#     token_ids=torch.randint(0, 32000, (16, 128)),    # (batch=16, seq_len=128)
+#     prompt_ids=torch.randint(0, 32000, (16, 64)),    # (batch=16, prompt_len=64)
+#     log_probs=torch.randn(16, 128),                   # 生成時的 log probs
+#     ref_log_probs=torch.randn(16, 128),               # reference model 的 log probs
+#     rewards=torch.tensor([2.5, -1.0, 0.0, ...]),      # (batch=16,)
+#     advantages=torch.tensor([0.8, -0.3, 0.1, ...]),   # GRPO group-normalized
+# )
+
 
 # ===================================================================
 # level_config 範例（Parser 解析 ASCII grid + JSON 後的結構）
@@ -98,6 +159,51 @@ level_config_multi_key = {
         {"type": "goal", "x": 12, "y": 0},
     ],
     "agent_start": {"x": 0, "y": 12, "dir": 0},
+}
+
+# 涵蓋所有物件類型的範例：key, door (locked/closed/open), goal, lava, ball, box (含 contains)
+level_config_all_objects = {
+    "width": 13,
+    "height": 13,
+    "grid": [
+        "WWWWWWWWWWWWW",
+        "W...........W",
+        "W...........W",
+        "W..WWWWW....W",
+        "W..W........W",
+        "W..W........W",
+        "W...........W",
+        "W......WWWW.W",
+        "W...........W",
+        "W...........W",
+        "W...........W",
+        "W...........W",
+        "WWWWWWWWWWWWW",
+    ],
+    "objects": [
+        # goal — 終點（恰好一個）
+        {"type": "goal", "x": 11, "y": 11},
+        # key — 撿起後用來開同色 locked door
+        {"type": "key", "x": 2, "y": 1, "color": "yellow"},
+        {"type": "key", "x": 9, "y": 9, "color": "blue"},
+        # door — locked（預設），需同色 key 開啟
+        {"type": "door", "x": 6, "y": 3, "color": "yellow", "state": "locked"},
+        # door — closed，Agent 可直接開啟（不需 key）
+        {"type": "door", "x": 7, "y": 7, "color": "blue", "state": "closed"},
+        # door — open，已開啟的門，可直接通過
+        {"type": "door", "x": 3, "y": 6, "color": "green", "state": "open"},
+        # ball — 可撿起或推動到相鄰空格
+        {"type": "ball", "x": 5, "y": 5, "color": "red"},
+        # box — 可打開的箱子
+        {"type": "box", "x": 8, "y": 2, "color": "purple"},
+        # box (含 contains) — 打開後可獲得裡面藏的 key
+        {"type": "box", "x": 10, "y": 8, "color": "grey",
+         "contains": {"type": "key", "color": "blue"}},
+        # lava — 危險地形，踩到即死
+        {"type": "lava", "x": 4, "y": 9},
+        {"type": "lava", "x": 5, "y": 9},
+    ],
+    "agent_start": {"x": 1, "y": 1, "dir": 1},
 }
 
 
@@ -303,4 +409,22 @@ eval_report_quick_example = EvalReport(
     },
     eval_mode="quick",
     num_levels=100,
+)
+
+
+# ===================================================================
+# MetricsResult 範例 — metrics.py 計算的指標彙總
+# ===================================================================
+
+metrics_result_example = MetricsResult(
+    parse_success_rate=0.85,
+    playability_rate=0.75,
+    regret_stats={
+        "mean": 1.2,
+        "median": 1.1,
+        "std": 0.4,
+    },
+    total_levels=100,
+    parsed_levels=85,
+    playable_levels=64,
 )

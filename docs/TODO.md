@@ -10,7 +10,7 @@
 | PD-4 | Mode collapse 防治：是否需要額外 diversity 機制 | Reward / Training, SPEC §5.2 | 先觀察 group_size=16 的效果 |
 | PD-5 | Solution Diversity (JSD) 的具體計算方式 | Evaluation, SPEC §8 | [deferred] 先不實作 |
 | PD-6 | Human Study 的規模與設計 | Evaluation, SPEC §8 | [deferred] 先不實作 |
-| PD-7 | BabyAI strong/weak agent 的具體選擇 | Agent Pool, SPEC §5.4 | 需調查 BabyAI 可用 checkpoint |
+| PD-7 | BabyAI strong/weak agent 的具體選擇 | Agent Pool, SPEC §5.4 | [obsolete: 改為自行訓練 curriculum agent，強弱差異由門檻與環境種類決定] |
 
 ---
 
@@ -29,40 +29,52 @@
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| D-1 | 調查 BabyAI 可用的 pretrained agent checkpoint | ☐ | 確定 strong/weak 的具體選擇；Per SPEC §5.4, PD-7 |
-| D-2 | 下載/準備 BabyAI agent checkpoints | ☐ | 放入 `checkpoints/agents/` |
-| D-3 | 驗證 BabyAI agent 在隨機 MiniGrid 13×13 關卡上的表現 | ☐ | Strong win rate 應 > 80%；Per SPEC §6 |
+| D-1 | 調查 BabyAI 可用的 pretrained agent checkpoint | ☐ | [obsolete: 改為自行訓練 curriculum agent] |
+| D-2 | 下載/準備 BabyAI agent checkpoints | ☐ | [obsolete: 改為自行訓練 curriculum agent] |
+| D-3 | 驗證 curriculum-trained agent 在隨機 MiniGrid 13×13 關卡上的表現 [updated] | ☐ | Strong win rate 應 > 80%；驗證 curriculum 訓練後 agent 在 LLM 生成關卡上的泛化能力 |
 | D-4 | 撰寫 LLM 輸出範例（ASCII grid + JSON，≥10 筆） | ☐ | 供 Parser 開發使用；Per SPEC §3 |
+
+## Agent Curriculum Training (Phase 1-2) [added]
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| AT-1 | 實作 `agent_training/train_curriculum.py` — BabyAI 環境 curriculum 訓練腳本 | ☐ | Per SPEC §5.4；含 curriculum 晉級邏輯、success rate 門檻判斷 |
+| AT-2 | 設計並配置 curriculum 成功率門檻（config 中各關卡門檻設定） | ☐ | Per SPEC §11.4；strong: 高門檻全 curriculum，weak: 低門檻部分 curriculum |
+| AT-3 | 驗證各 BabyAI 環境支援 room_size=15 參數 | ☐ | GoToObj, Unlock, KeyInBox, UnblockPickup, BlockedUnlockPickup, UnlockToUnlock, MiniBossLevel, BossLevel |
+| AT-4 | 訓練 strong_0：完整 curriculum（8 關），高門檻（~85-90%） | ☐ | 儲存至 `checkpoints/agents/strong_0.zip` |
+| AT-5 | 訓練 weak_0：部分 curriculum（前 3 關），低門檻（~50-60%） | ☐ | 儲存至 `checkpoints/agents/weak_0.zip` |
+| AT-6 | 訓練 held-out agents（strong_held_0, weak_held_0），使用不同 seed | ☐ | 儲存至 `checkpoints/agents/` |
+| AT-7 | 實作 `agent_training/evaluate_agent.py` — 評估 agent 各環境 success rate | ☐ | 驗證強弱差異明顯 |
 
 ## Phase 0: Toy Case — Pipeline Smoke Test [added]
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| TC-1 | 實作 `toy_case/train_agent.py` — SB3 PPO 訓練腳本（DoorKeyEnv(size=13)） | ☐ | Per SPEC §5.4.1；含 strong/weak 兩種訓練配置 |
-| TC-2 | 訓練 toy_strong_0：PPO on `MiniGrid-DoorKey-13x13-v0`，~1M steps，目標 success rate > 90% | ☐ | 儲存至 `checkpoints/agents/toy_strong_0.zip` |
-| TC-3 | 訓練 toy_weak_0：PPO on `MiniGrid-DoorKey-13x13-v0`，~50K steps，目標 success rate ~30-60% | ☐ | 儲存至 `checkpoints/agents/toy_weak_0.zip` |
+| TC-1 | 實作 `toy_case/train_agent.py` — SB3 PPO 訓練腳本（DoorKeyEnv(room_size=15)） [updated] | ☑ | Per SPEC §5.4.1；含 strong/weak 兩種訓練配置 |
+| TC-2 | 訓練 toy_strong_0：PPO on `MiniGrid-DoorKey-15x15-v0`，~1M steps，目標 success rate > 90% [updated] | ☐ | 儲存至 `checkpoints/agents/toy_strong_0.zip` |
+| TC-3 | 訓練 toy_weak_0：PPO on `MiniGrid-DoorKey-15x15-v0`，~50K steps，目標 success rate ~30-60% [updated] | ☐ | 儲存至 `checkpoints/agents/toy_weak_0.zip` |
 | TC-4 | 驗證 strong/weak agent 表現差異（在 DoorKeyEnv 上跑 100 episodes，確認 success rate 差距明顯） | ☐ | Strong > 90%, Weak 30-60% |
 | TC-5 | LLM zero-shot 生成 10-20 張地圖（使用 Experiment 0 的 LLM + prompt） | ☐ | 依賴 S-1, S-2 或可用簡化版 LLM 呼叫 |
-| TC-6 | 實作 `toy_case/run_toy_pipeline.py` — 端到端 pipeline smoke test | ☐ | parse → env → rollout(toy agents) → reward；Per SPEC §12 Exp T |
-| TC-7 | 執行 toy pipeline，驗證各 shared type dataclass 欄位正確 | ☐ | Pipeline 不報錯即為成功；Per SPEC §11.1 |
+| TC-6 | 實作 `toy_case/run_toy_pipeline.py` — 端到端 pipeline smoke test | ☑ | parse → env → rollout(toy agents) → reward；Per SPEC §12 Exp T |
+| TC-7 | 執行 toy pipeline，驗證各 shared type dataclass 欄位正確 | ☑ | Mock 模式全部通過；真實模式需等 Module B |
 
 ## Sanity Checks
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| S-1 | 實作 LLMPolicy.generate()（QLoRA 4-bit 載入 + 生成） | ☐ | Per SPEC §11 Module A；驗證 4090 可跑 |
-| S-2 | 設計 MiniGrid prompt template（ASCII grid + JSON 格式） | ☐ | Per SPEC §3, §11 Module A |
-| S-3 | 執行 Experiment 0: Sanity Check（100+ 次生成，統計 parse rate） | ☐ | Per SPEC §10 Exp 0；目標 > 10% |
+| S-1 | 實作 LLMPolicy.generate()（QLoRA 4-bit 載入 + 生成） | ☑ | Per SPEC §11 Module A；驗證 4090 可跑 |
+| S-2 | 設計 MiniGrid prompt template（ASCII grid + JSON 格式） | ☑ | Per SPEC §3, §11 Module A |
+| S-3 | 執行 Experiment 0: Sanity Check（100+ 次生成，統計 parse rate） | ☐ | 腳本已實作 (`toy_case/sanity_check.py`)；需 GPU 執行 |
 | S-4 | 若 parse rate < 10%：嘗試純 JSON 格式或換模型 | ☐ | Per SPEC §7 風險緩解 |
 
 ## Module Implementation — Module A: LLM Policy
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| MA-1 | 實作 `llm_policy/policy.py` — LLMPolicy class（QLoRA 載入、generate、get_ref_log_probs） | ☐ | Per SPEC §11 Module A |
-| MA-2 | 實作 `llm_policy/prompts.py` — Prompt template 管理 | ☐ | Per SPEC §3, §11 |
-| MA-3 | 實作 `llm_policy/grpo.py` — GRPO update（或整合 TRL GRPOTrainer） | ☐ | Per SPEC §5.3, §11 |
-| MA-4 | 撰寫 LLMPolicy mock（API 簽名正確 + 隨機值） | ☐ | Per SPEC §11；供 B, C 獨立測試 |
+| MA-1 | 實作 `llm_policy/policy.py` — LLMPolicy class（QLoRA 載入、generate、get_ref_log_probs） | ☑ | Per SPEC §11 Module A |
+| MA-2 | 實作 `llm_policy/prompts.py` — Prompt template 管理 | ☑ | Per SPEC §3, §11 |
+| MA-3 | 實作 `llm_policy/grpo.py` — GRPO update（或整合 TRL GRPOTrainer） | ☐ | GRPO update 已整合在 policy.py 內；grpo.py 可後續獨立抽出 |
+| MA-4 | 撰寫 LLMPolicy mock（API 簽名正確 + 隨機值） | ☑ | Per SPEC §11；供 B, C 獨立測試 |
 
 ## Module Implementation — Module B: Game Environment
 

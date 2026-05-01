@@ -44,7 +44,7 @@
 - **Q12**: 為什麼 GRPO？
   - **A12**: Reward 稀疏，不適合訓練 value function [resolved]
 
-- **Q13**: 為什麼 Qwen3.5-Coder-9B？
+- **Q13**: 為什麼 Qwen3.5-9B？
   - **A13**: 尚未驗證，需 sanity check。Fallback 是換模型 [resolved]
 
 - **Q14**: 如何區分假設錯誤 vs 訓練設計問題？

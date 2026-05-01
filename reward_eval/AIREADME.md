@@ -6,7 +6,7 @@
 
 ## 1. 專案概述
 
-**RLVR Game Level Generation** — 使用 GRPO（Group Relative Policy Optimization）微調 Qwen3.5-Coder-9B，使其生成 MiniGrid / MiniHack 遊戲關卡。訓練信號完全來自 agent pool 的 regret index，不使用人類設計資料。
+**RLVR Game Level Generation** — 使用 GRPO（Group Relative Policy Optimization）微調 Qwen3.5-9B，使其生成 MiniGrid / MiniHack 遊戲關卡。訓練信號完全來自 agent pool 的 regret index，不使用人類設計資料。
 
 **核心假設**：LLM 預訓練知識 + GRPO 微調 → 生成能區分強弱玩家技巧水準的關卡。
 

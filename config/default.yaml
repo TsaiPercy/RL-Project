@@ -42,15 +42,71 @@ num_rollouts_per_agent: 5
 num_envs: 16                        # SubprocVecEnv parallel environments
 agent_pool_path: "checkpoints/agents/"
 training_agents:
-  - strong_0                        # BabyAI pretrained strong
-  - weak_0                          # BabyAI pretrained weak
+  - strong_0                        # self-trained, full curriculum
+  - weak_0                          # self-trained, partial curriculum
 held_out_agents:
-  - strong_held_0                   # BabyAI pretrained strong (held-out)
-  - weak_held_0                     # BabyAI pretrained weak (held-out)
+  - strong_held_0                   # self-trained, full curriculum (different seed)
+  - weak_held_0                     # self-trained, partial curriculum (different seed)
+
+# === Agent Curriculum Training (Phase 1-2) ===
+agent_training:
+  room_size: 15                       # all curriculum envs use room_size=15
+  curriculum:                         # ordered from easy to hard
+    - env: "BabyAI-GoToObj-v0"
+      success_threshold: 0.90
+    - env: "BabyAI-Unlock-v0"
+      success_threshold: 0.70
+    - env: "BabyAI-KeyInBox-v0"
+      success_threshold: 0.70
+    - env: "BabyAI-UnblockPickup-v0"
+      success_threshold: 0.70
+    - env: "BabyAI-BlockedUnlockPickup-v0"
+      success_threshold: 0.50
+    - env: "BabyAI-UnlockToUnlock-v0"
+      success_threshold: 0.40
+    - env: "BabyAI-MiniBossLevel-v0"
+      success_threshold: 0.20
+    - env: "BabyAI-BossLevel-v0"
+      success_threshold: 0.10
+  strong_agent:
+    curriculum_levels: 8              # train through all 8 levels
+    success_threshold_override: 0.85  # higher threshold for strong agent
+    total_timesteps: 5_000_000
+  weak_agent:
+    curriculum_levels: 3              # only train first 3 levels (GoToObj, Unlock, KeyInBox)
+    success_threshold_override: 0.50  # lower threshold for weak agent
+    total_timesteps: 1_000_000
+  ppo_hyperparams:
+    learning_rate: 3.0e-4
+    n_steps: 2048
+    batch_size: 64
+    n_epochs: 10
+    gamma: 0.99
+    ent_coef: 0.01
+
+# === Toy Case (Phase 0) ===
+toy_case:
+  train_env: "MiniGrid-DoorKey-15x15-v0"
+  strong_agent_steps: 1_000_000       # PPO training steps for strong agent
+  weak_agent_steps: 50_000            # PPO training steps for weak agent (early stop)
+  toy_agents:
+    - toy_strong_0
+    - toy_weak_0
+  num_test_levels: 20                 # LLM zero-shot levels for smoke test
+  ppo_hyperparams:
+    learning_rate: 3.0e-4
+    n_steps: 2048
+    batch_size: 64
+    n_epochs: 10
+    gamma: 0.99
+    ent_coef: 0.01
 
 # === Evaluation ===
 eval_num_levels: 100                # levels per evaluation
 eval_interval: 50                   # evaluate every N iterations
+
+# === Cache ===
+cache_dir: "cache/huggingface"         # HuggingFace model/tokenizer cache (project-local)
 
 # === Logging ===
 wandb_project: "rlvr-level-gen"

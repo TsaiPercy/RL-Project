@@ -18,12 +18,14 @@ class GenerationOutput:
     texts: list[str]            # 生成的原始文字（ASCII grid + JSON）
     log_probs: Tensor           # shape (batch, seq_len)
     token_ids: Tensor           # shape (batch, seq_len)
+    prompt_ids: Tensor          # shape (batch, prompt_len)
 
 
 @dataclass
 class GRPOBatch:
     """傳入 LLMPolicy.update() 的一個 training batch。"""
     token_ids: Tensor           # shape (batch, seq_len)
+    prompt_ids: Tensor          # shape (batch, prompt_len)
     log_probs: Tensor           # 生成時的 log probs, shape (batch, seq_len)
     ref_log_probs: Tensor       # reference model 的 log probs, shape (batch, seq_len)
     rewards: Tensor             # shape (batch,)
@@ -36,7 +38,37 @@ class GRPOBatch:
 
 @dataclass
 class ParseResult:
-    """GameEnvironment.parse_level() 的回傳值。"""
+    """GameEnvironment.parse_level() 的回傳值。
+
+    level_config 結構:
+        {
+            "width": 13,
+            "height": 13,
+            "grid": list[str],          # 13 行，每行 13 字元 ('W' 或 '.')
+            "objects": list[dict],       # 物件清單，見下方說明
+            "agent_start": {"x": int, "y": int, "dir": 0-3}
+        }
+
+    可用物件 (objects 內的 dict):
+        - wall:  由 grid 中 'W' 定義，不出現在 objects 清單
+        - floor: 由 grid 中 '.' 定義，不出現在 objects 清單
+        - goal:  {"type": "goal", "x": int, "y": int}
+                 終點，Agent 走到即過關。整個關卡恰好一個。
+        - key:   {"type": "key", "x": int, "y": int, "color": str}
+                 鑰匙，可撿起，用來開同色 locked door。
+        - door:  {"type": "door", "x": int, "y": int, "color": str, "state": str}
+                 門，state 可為 "open" / "closed" / "locked"（預設 "locked"）。
+                 locked 需要同色 key 才能開啟；closed 可直接開啟。
+        - ball:  {"type": "ball", "x": int, "y": int, "color": str}
+                 球，可撿起或推動到相鄰空格。
+        - box:   {"type": "box", "x": int, "y": int, "color": str}
+                 箱子，可打開。可選 "contains" 欄位藏一個 key:
+                 {"type": "box", ..., "contains": {"type": "key", "color": str}}
+
+    顏色可用: red, green, blue, purple, yellow, grey
+    座標範圍: x ∈ [0, 12], y ∈ [0, 12]
+    agent_start.dir: 0=right, 1=down, 2=left, 3=up
+    """
     success: bool
     level_config: Optional[dict] = None   # 見 type_examples.py 的 level_config 範例
     error_msg: Optional[str] = None

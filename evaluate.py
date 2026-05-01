@@ -14,6 +14,10 @@ Per SPEC §8, §12:
 
 from __future__ import annotations
 
+# Set project-local cache dirs before any ML library is imported.
+from shared.env_setup import setup_project_cache
+setup_project_cache()
+
 import argparse
 import json
 import logging
