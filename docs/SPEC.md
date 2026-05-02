@@ -140,11 +140,19 @@ L = -E[advantage * log π(y|x)] + kl_coeff * KL(π || π_ref)
 #### 訓練機制
 
 - 每個關卡在 config 中設定**成功率門檻**（如 80%），達標後才進入下一關卡訓練
-- 所有環境統一 `room_size=15`（15×15 total，13×13 usable space）
+<!-- before: 所有環境統一 `room_size=15`（15×15 total，13×13 usable space） -->
+- 各環境使用 BabyAI 預設大小，不再統一覆寫 `room_size`（避免大型 maze 過慢與 rejection-sampling 噪音；agent obs 仍為 7×7×3） [impl-updated]
 <!-- before: Strong agent：通過完整 curriculum（所有 8 關），門檻設定較高（如 85-90%）; Weak agent：僅通過部分 curriculum（如前 3-4 關），或門檻設定較低（如 50-60%）; 透過調整門檻與訓練關卡數量，可靈活製造不同程度的強弱差異 -->
 - **Strong agent**：通過完整 curriculum（所有 9 關），各關 effective threshold = base + `success_increase` (+0.05) [updated]
 - **Weak agent**：僅通過部分 curriculum（前 3 關），各關 effective threshold = base + `success_increase` (−0.25) [updated]
 - 透過 `success_increase` 調整各關 effective threshold 與 `curriculum_levels` 限制訓練關卡數，靈活製造強弱差異 [updated]
+<!-- before: agent uses ImgObsWrapper + PPO("CnnPolicy") on (7,7,3) image only; mission string discarded -->
+- 觀察值處理：`MissionTokenizer` wrapper 將原始 BabyAI dict obs 轉為
+  `{image: (7,7,3) uint8, direction: (1,) int64, mission: (L,) int64}`；
+  policy 為 `PPO("MultiInputPolicy")` + `BabyAIDictExtractor`
+  （CNN + token mean-pool + direction embedding 融合）。修正 BabyAI-GoTo-v0
+  mission-blindness（agent 過去無法得知目標物件）。Phase A 不導入 LSTM；
+  若後續 maze 階段卡關再評估 RecurrentPPO（Phase B，目前 deferred）。 [impl-updated]
 
 #### Agent Pool 配置
 
@@ -690,7 +698,16 @@ held_out_agents:
 
 # === Agent Curriculum Training (Phase 1-2) === [added]
 agent_training:
-  room_size: 15                       # all curriculum envs use room_size=15
+  # [impl-updated] room_size override removed — each curriculum env uses
+  # its native default size. Per §5.4 [impl-updated].
+  # [impl-updated AT-4.x] Phase A dict obs + mission encoding fields:
+  #   mission_max_len, vocab_size, text_embed_dim, dir_embed_dim
+  # and renamed ppo_hyperparams.cnn_features_dim -> features_dim
+  # (extractor is no longer pure CNN). Per §5.4 [impl-updated].
+  mission_max_len: 8                  # GoTo missions <= 6 tokens; pad to 8
+  vocab_size: 16                      # len(BABYAI_VOCAB) — must match agent_training/wrappers.py
+  text_embed_dim: 32
+  dir_embed_dim: 8
   curriculum:                         # ordered from easy to hard (GoTo family, single task) [updated]
     # effective_threshold = success_threshold + agent.success_increase
     - env: "BabyAI-GoTo-v0"
@@ -951,7 +968,10 @@ project/
 │   └── run_toy_pipeline.py  # 端到端 pipeline smoke test
 ├── agent_training/          # [added] Phase 1-2: Agent Curriculum Training
 │   ├── train_curriculum.py  # BabyAI 環境 curriculum 訓練腳本
-│   └── evaluate_agent.py    # Agent 表現評估（各環境 success rate）
+│   ├── evaluate_agent.py    # Agent 表現評估（各環境 success rate）
+│   ├── wrappers.py          # [impl-updated AT-4.x] MissionTokenizer + BABYAI_VOCAB
+│   ├── extractors.py        # [impl-updated AT-4.x] BabyAIDictExtractor (CNN + mission text + direction fusion)
+│   └── baby_ai_silence.py   # [added] 抑制 BabyAI rejection-sampling stdout chatter
 ├── train.py                 # 主訓練迴圈（Module A 整合 B + C）
 ├── evaluate.py              # 獨立評估腳本（quick + full 模式）
 ├── cache/                   # [added] Project-local ML cache（HuggingFace / Torch / wandb，gitignored）

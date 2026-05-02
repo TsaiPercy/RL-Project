@@ -49,33 +49,49 @@ held_out_agents:
   - weak_held_0                     # self-trained, partial curriculum (different seed)
 
 # === Agent Curriculum Training (Phase 1-2) ===
+# [impl-updated] Curriculum replaced with GoTo family (9 levels); keys renamed
+# success_threshold_override → success_increase, total_timesteps → max_timesteps
+# Per SPEC §5.4 [updated] and §11.4 [updated]
 agent_training:
-  room_size: 15                       # all curriculum envs use room_size=15
-  curriculum:                         # ordered from easy to hard
-    - env: "BabyAI-GoToObj-v0"
-      success_threshold: 0.90
-    - env: "BabyAI-Unlock-v0"
+  # [impl-updated] room_size override removed — each curriculum env uses its
+  # native default size. Smaller mazes mean faster episodes and far less
+  # rejection-sampling chatter from BabyAI's level generator.
+  # [impl-updated AT-4.x] Phase A dict obs + mission encoding.  MissionTokenizer
+  # converts BabyAI's raw dict obs into {image, direction, mission} so the
+  # policy (PPO MultiInputPolicy + BabyAIDictExtractor) can read the goal.
+  mission_max_len: 8                  # GoTo missions ≤ 6 tokens; pad to 8
+  vocab_size: 16                      # len(BABYAI_VOCAB) — must match agent_training/wrappers.py
+  text_embed_dim: 32                  # mission token embedding width
+  dir_embed_dim: 8                    # direction (0..3) embedding width
+  eval_episodes: 50                   # episodes per success-rate evaluation
+  eval_chunk_steps: 100_000           # train steps between evaluations
+  curriculum:                         # GoTo family ordered easy → hard [impl-updated]
+    - env: "BabyAI-GoTo-v0"
+      success_threshold: 0.90         # trivial task; high bar
+    - env: "BabyAI-GoToOpen-v0"
+      success_threshold: 0.85
+    - env: "BabyAI-GoToObjMaze-v0"
+      success_threshold: 0.80
+    - env: "BabyAI-GoToObjMazeOpen-v0"
+      success_threshold: 0.80
+    - env: "BabyAI-GoToObjMazeS4R2-v0"
+      success_threshold: 0.75
+    - env: "BabyAI-GoToObjMazeS4-v0"
+      success_threshold: 0.75
+    - env: "BabyAI-GoToObjMazeS5-v0"
       success_threshold: 0.70
-    - env: "BabyAI-KeyInBox-v0"
-      success_threshold: 0.70
-    - env: "BabyAI-UnblockPickup-v0"
-      success_threshold: 0.70
-    - env: "BabyAI-BlockedUnlockPickup-v0"
-      success_threshold: 0.50
-    - env: "BabyAI-UnlockToUnlock-v0"
-      success_threshold: 0.40
-    - env: "BabyAI-MiniBossLevel-v0"
-      success_threshold: 0.20
-    - env: "BabyAI-BossLevel-v0"
-      success_threshold: 0.10
+    - env: "BabyAI-GoToObjMazeS6-v0"
+      success_threshold: 0.65
+    - env: "BabyAI-GoToObjMazeS7-v0"
+      success_threshold: 0.60         # hardest; lower bar acceptable
   strong_agent:
-    curriculum_levels: 8              # train through all 8 levels
-    success_threshold_override: 0.85  # higher threshold for strong agent
-    total_timesteps: 5_000_000
+    curriculum_levels: 9              # train through all 9 levels [impl-updated]
+    success_increase: 0.05            # effective = base + 0.05 [impl-updated]
+    max_timesteps: 5_000_000          # total budget across all levels [impl-updated]
   weak_agent:
-    curriculum_levels: 3              # only train first 3 levels (GoToObj, Unlock, KeyInBox)
-    success_threshold_override: 0.50  # lower threshold for weak agent
-    total_timesteps: 1_000_000
+    curriculum_levels: 3              # only train first 3 levels [impl-updated]
+    success_increase: -0.25           # effective = base - 0.25 [impl-updated]
+    max_timesteps: 1_000_000          # [impl-updated]
   ppo_hyperparams:
     learning_rate: 3.0e-4
     n_steps: 2048
@@ -83,6 +99,7 @@ agent_training:
     n_epochs: 10
     gamma: 0.99
     ent_coef: 0.01
+    features_dim: 256                 # [impl-updated AT-4.x] renamed from cnn_features_dim; output dim of BabyAIDictExtractor (CNN + mission text + direction fusion)
 
 # === Toy Case (Phase 0) ===
 toy_case:
