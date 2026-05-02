@@ -41,10 +41,14 @@
 | AT-1 | 實作 `agent_training/train_curriculum.py` — BabyAI 環境 curriculum 訓練腳本 | ☑ | Per SPEC §5.4；含 curriculum 晉級邏輯、success rate 門檻判斷 |
 | AT-2 | 設計並配置 curriculum 成功率門檻（config 中各關卡門檻設定） | ☑ | Per SPEC §11.4；strong: 高門檻全 curriculum，weak: 低門檻部分 curriculum |
 | AT-3 | 驗證各 BabyAI 環境支援 room_size=15 參數 [updated] | ☑ | [obsolete: 2026-05-02 改為各環境使用 BabyAI 預設大小，不再統一覆寫 room_size — 不再需要 fallback 邏輯] |
-| AT-4 | 訓練 strong_0：完整 curriculum（9 關），高門檻 [updated] | ☐ | 儲存至 `checkpoints/agents/strong_0.zip`；執行: `python -m agent_training.train_curriculum --agent strong --seed 42` |
-| AT-5 | 訓練 weak_0：部分 curriculum（前 3 關），低門檻 [updated] | ☐ | 儲存至 `checkpoints/agents/weak_0.zip`；執行: `python -m agent_training.train_curriculum --agent weak --seed 42` |
+| AT-4 | 訓練 strong_0：完整 curriculum（9 關），高門檻 [updated] | ☐ | [needs-redo: 2026-05-03 obs space + policy class 變更；legacy ckpts 已刪除]；儲存至 `checkpoints/agents/strong_0.zip`；執行: `python -m agent_training.train_curriculum --agent strong --seed 42` |
+| AT-5 | 訓練 weak_0：部分 curriculum（前 3 關），低門檻 [updated] | ☐ | [needs-redo: 2026-05-03 obs space + policy class 變更；legacy ckpts 已刪除]；儲存至 `checkpoints/agents/weak_0.zip`；執行: `python -m agent_training.train_curriculum --agent weak --seed 42` |
 | AT-6 | 訓練 held-out agents（strong_held_0, weak_held_0），使用不同 seed | ☐ | 儲存至 `checkpoints/agents/`；執行: `--agent-id strong_held_0 --seed 99` |
 | AT-7 | 實作 `agent_training/evaluate_agent.py` — 評估 agent 各環境 success rate | ☑ | 驗證強弱差異明顯 |
+| AT-4.1 | 實作 `agent_training/wrappers.py` (`MissionTokenizer` + `BABYAI_VOCAB`) [added 2026-05-03] | ☑ | Per SPEC §5.4 [impl-updated]；16-token hardcoded vocab; pads to mission_max_len |
+| AT-4.2 | 實作 `agent_training/extractors.py` (`BabyAIDictExtractor`) [added 2026-05-03] | ☑ | Per SPEC §5.4 [impl-updated]；module-level (cloudpickle requirement)；handles HWC/CHW via `is_image_space_channels_first` |
+| AT-4.3 | 重構 `train_curriculum.py` + `evaluate_agent.py`：wrapper swap, 移除 inline extractor, switch to `MultiInputPolicy` [added 2026-05-03] | ☑ | Per SPEC §5.4 [impl-updated]；config 讀取 mission_max_len/vocab_size/text_embed_dim/dir_embed_dim/features_dim |
+| AT-4.4 | Phase A smoke test (50K 步 `BabyAI-GoTo-v0`) [added 2026-05-03] | ☑ | 結果：stochastic eval 18% (9/50) > random baseline 14% (7/50)；deterministic 2%（policy 尚未收斂）；gradient flow ✓；save/load roundtrip ✓ |
 
 ## Phase 0: Toy Case — Pipeline Smoke Test [added]
 
