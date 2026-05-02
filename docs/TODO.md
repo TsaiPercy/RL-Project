@@ -93,19 +93,19 @@
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| MC-1 | 實作 `reward_eval/reward.py` — RewardCalculator（regret + playability, regret clamp ≥ 0） | ☐ | Per SPEC §5.2, §11 Module C |
-| MC-2 | 實作 `reward_eval/reward.py` — compute_advantages_grpo()（group z-score normalization） | ☐ | Per SPEC §5.3, §11 |
-| MC-3 | 實作 `reward_eval/metrics.py` — Playability Rate, Parse Success Rate, Regret 計算 | ☐ | Per SPEC §8 |
-| MC-4 | 實作 `reward_eval/evaluation.py` — EvaluationSuite（quick + full 模式） | ☐ | Per SPEC §8, §11 Module C |
-| MC-5 | 實作 `reward_eval/visualization.py` — reward curve, regret histogram, baseline 對比 | ☐ | Per SPEC §13 |
-| MC-6 | 撰寫 RewardCalculator mock（API 簽名正確 + 隨機值） | ☐ | Per SPEC §11；供 A, B 獨立測試 |
+| MC-1 | 實作 `reward_eval/reward.py` — RewardCalculator（regret + playability, regret clamp ≥ 0） | ☑ | Per SPEC §5.2, §11 Module C |
+| MC-2 | 實作 `reward_eval/reward.py` — compute_advantages_grpo()（group z-score normalization） | ☑ | Per SPEC §5.3, §11 |
+| MC-3 | 實作 `reward_eval/metrics.py` — Playability Rate, Parse Success Rate, Regret 計算 | ☑ | Per SPEC §8 |
+| MC-4 | 實作 `reward_eval/evaluation.py` — EvaluationSuite（quick + full 模式） | ☑ | Per SPEC §8, §11 Module C |
+| MC-5 | 實作 `reward_eval/visualization.py` — reward curve, regret histogram, baseline 對比 | ☑ | Per SPEC §13 |
+| MC-6 | 撰寫 RewardCalculator mock（API 簽名正確 + 隨機值） | ☑ | Per SPEC §11；供 A, B 獨立測試 |
 
 ## Integration
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | INT-1 | 實作 `train.py` — 主訓練迴圈（串接 A + B + C） | ☐ | Per SPEC §11, §12 Exp 3 |
-| INT-2 | 實作 `evaluate.py` — 獨立評估腳本（quick + full 模式） | ☐ | Per SPEC §8, §12 |
+| INT-2 | 實作 `evaluate.py` — 獨立評估腳本（quick + full 模式） | ☑ | Per SPEC §8, §12 |
 | INT-3 | 用 mock 模組跑通 train.py 一個 iteration | ☐ | 驗證模組間資料流 |
 | INT-4 | 替換 mock 為真實模組，端到端跑通 | ☐ | Per SPEC §12 |
 
@@ -113,7 +113,7 @@
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| B-1 | 實作 `baselines/run_baseline.py` — Zero-shot baseline | ☐ | Per SPEC §10 Exp 1 |
+| B-1 | 實作 `baselines/run_baseline.py` — Zero-shot baseline | ☑ | Per SPEC §10 Exp 1 |
 | B-2 | 執行 Zero-shot baseline，收集 100 個關卡的 parse rate / playability / regret | ☐ | Per SPEC §10 Exp 1 |
 | B-3 | 從 zero-shot 輸出篩選 parse-valid 關卡作為 few-shot examples | ☐ | Per SPEC §10 Exp 2 |
 | B-4 | 執行 Few-shot baseline，收集同上指標 | ☐ | Per SPEC §10 Exp 2 |

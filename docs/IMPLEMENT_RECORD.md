@@ -38,3 +38,39 @@ reviewed ✅
 - **S-4 備案**: 若 S-3 的 parse rate < 10%，`sanity_check.py` 會輸出警告，需手動檢查 `results/sanity_check/` 下的原始輸出來決定是否退回純 JSON 格式
 - **Module B 依賴**: `run_toy_pipeline.py` 的 Real 模式中，完整 pipeline（parse → env → rollout）需等成員 B 完成 `game_env/parser.py` 和 `game_env/environment.py`
 - **bitsandbytes / stable-baselines3 未安裝**: 當前環境缺少 `bitsandbytes`, `peft`, `stable-baselines3`, `minigrid` 等套件，需先執行 `pip install` 或建立 conda 環境（Per TODO I-2）
+
+---
+
+## Session: 2026-05-01~02 — Member C (Percy): Module C — Reward & Evaluation
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| MC-1 | 實作 `reward_eval/reward.py` — RewardCalculator（regret + playability, regret clamp ≥ 0） | ☑ |
+| MC-2 | 實作 `reward_eval/reward.py` — compute_advantages_grpo()（group z-score normalization） | ☑ |
+| MC-3 | 實作 `reward_eval/metrics.py` — Playability Rate, Parse Success Rate, Regret 計算 | ☑ |
+| MC-4 | 實作 `reward_eval/evaluation.py` — EvaluationSuite（quick + full 模式） | ☑ |
+| MC-5 | 實作 `reward_eval/visualization.py` — reward curve, regret histogram, baseline 對比 | ☑ |
+| MC-6 | 撰寫 RewardCalculator mock（API 簽名正確 + 隨機值） | ☑ |
+| INT-2 | 實作 `evaluate.py` — 獨立評估腳本（quick + full 模式） | ☑ |
+| B-1 | 實作 `baselines/run_baseline.py` — Zero-shot baseline | ☑ |
+| I-4 (partial) | 更新 `shared/types.py` — 新增 `MetricsResult` dataclass | ☑ |
+
+### Decisions Made
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| MC-4 | EvaluationSuite 持有 GameEnvironment 參考（Option A） | Per SPEC §11，內部呼叫 `batch_evaluate()` 取得 rollout，簡化 evaluate() API |
+| MC-4 | `evaluate()` 根據 `mode` 從 config 解析 `agent_ids`，傳入 `batch_evaluate(agent_ids=...)` | Per SPEC §8：quick 用 training agents、full 用 held-out agents；需與成員 B 確認 `batch_evaluate()` 是否接受 `agent_ids` 參數 |
+| I-4 | `MetricsResult` 放在 `shared/types.py`（非 local type） | 跨 metrics.py / evaluate.py / EvaluationSuite 使用，屬 shared contract |
+| B-1 | 移除 `BaselineConfig`，改用 `argparse` | `run_baseline.py` 為獨立腳本，argparse 直接處理設定更簡潔，避免過度設計 |
+| MC-5 | `visualization.py` 使用 `Agg` backend | 非互動式後端，適合 server/CI 環境，避免 GUI 依賴 |
+
+### Spec Amendments
+| Change | Before | After | Rationale |
+|--------|--------|-------|-----------|
+| `batch_evaluate()` 簽名 | `batch_evaluate(llm_outputs, num_rollouts_per_agent)` | `batch_evaluate(llm_outputs, num_rollouts_per_agent, agent_ids=...)` | Per SPEC §8 mode 需選擇 agent pool；新增 `agent_ids` keyword arg |
+
+### Concerns
+- **`batch_evaluate()` 新增 `agent_ids` 參數**：需與成員 B 確認 `GameEnvironment.batch_evaluate()` 是否支援此參數。目前以 keyword argument 傳入，不影響已有呼叫方式。
+- **環境名稱不一致**：成員 C 建立了 `RL_Final_Project` 環境，但團隊統一名稱為 `RL_project`。建議成員 C 重新建立或重命名環境。
+- **TODO I-4 部分完成**：成員 C 新增了 `MetricsResult`，但成員 A 亦有獨立更新 `shared/types.py`（新增 `prompt_ids` 等）。目前兩邊的修改不衝突。
