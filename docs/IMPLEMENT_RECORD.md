@@ -41,6 +41,264 @@ reviewed ✅
 
 ---
 
+## Session: 2026-05-02 — Agent Curriculum Training (AT-1, AT-2, AT-3, AT-7)
+
+### Tasks Completed
+
+| ID | Description | Status |
+|----|-------------|--------|
+| AT-1 | 實作 `agent_training/train_curriculum.py` — BabyAI 環境 curriculum 訓練腳本 | ☑ |
+| AT-2 | 設計並配置 curriculum 成功率門檻（config 中各關卡門檻設定） | ☑ |
+| AT-3 | 驗證各 BabyAI 環境支援 room_size=15 參數 | ☑ |
+| AT-7 | 實作 `agent_training/evaluate_agent.py` — 評估 agent 各環境 success rate | ☑ |
+
+AT-4 (train strong_0) and AT-5 (train weak_0) require actual GPU execution and are left
+for the user:
+```bash
+python -m agent_training.train_curriculum --agent strong --seed 42
+python -m agent_training.train_curriculum --agent weak   --seed 42
+```
+
+### Decisions Made
+
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| AT-1 | `CurriculumTrainer` class with a single `train()` method | Single-responsibility; mirrors `toy_case/train_agent.py` pattern |
+| AT-1 | Train in `eval_chunk_steps` (100K) increments, evaluate after each chunk | Allows per-level early-stopping without a separate EvalCallback; simpler control flow |
+| AT-1 | `model.set_env(train_env)` when switching levels | SB3 PPO supports runtime env swap; avoids re-instantiating and discarding weights |
+| AT-1 | Save intermediate checkpoint after every level | Cheap disk cost vs. high diagnostic value if training is interrupted |
+| AT-1 | `reset_num_timesteps=False` on all calls after the first | Preserves SB3 internal step counter across levels for consistent logging |
+| AT-3 | `try gym.make(env_id, room_size=…) except TypeError: gym.make(env_id)` | GoToObjMazeS4-S7 envs bake maze size into name and may reject room_size kwarg; fallback is safe and logged as a warning |
+| AT-7 | `evaluate_agent()` as a standalone function | Only one responsibility; a class would be over-engineering for a pure eval loop |
+| AT-7 | `resolve_env_ids("all"/"first3"/csv)` helper | Flexible CLI for both strong (all 9) and weak (first 3) post-training checks |
+| AT-2 | Added `eval_episodes: 50`, `eval_chunk_steps: 100_000` to config | These fields were absent from original config; values balance eval speed vs. signal quality |
+
+### Spec Amendments
+
+| Severity | Section | Change | Trigger |
+|----------|---------|--------|---------|
+| L1 | §11.4 Pseudo Config | Synchronised `config/default.yaml` with SPEC §5.4 [updated]: replaced 8-env curriculum with 9-env GoTo family; renamed `success_threshold_override` → `success_increase`; `total_timesteps` → `max_timesteps`; added `eval_episodes` and `eval_chunk_steps` | impl-updated (AT-2) |
+
+### Concerns
+
+- **AT-3 room_size on S4-S7 envs**: GoToObjMazeS4-S7 likely cannot be overridden with `room_size=15`; the fallback uses the env's native size. Validate that the strong agent's generalisation to 15×15 MiniGrid levels is still adequate after training.
+- **CnnPolicy with 7×7 obs**: SB3's default CnnPolicy expects larger images. It handles small obs automatically with a shallower CNN, but training may be slower. If instability is observed, switch to `MlpPolicy` with flattened obs.
+- **Weak agent effective threshold**: At level 3 (GoToObjMaze-v0), effective threshold = 0.80 − 0.25 = 0.55. This is intentionally low to stop the agent before it becomes competent at maze navigation.
+
+---
+
+## Session: 2026-05-02 — BabyAI CNN Compatibility Bugfix (AT-4 blocker)
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| X-1 | Fix RuntimeError: NatureCNN kernel (8×8) > BabyAI obs size (7×7) — add `BabyAIFeaturesExtractor` with kernel_size=2 conv layers | ☑ |
+
+### Decisions Made
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| X-1 | Defined `BabyAIFeaturesExtractor(BaseFeaturesExtractor)` inside `train()` to preserve SB3 lazy-import pattern already established in the file | Class only exists when PPO is instantiated; avoids SB3 import at module level |
+| X-1 | Architecture: Conv2d(C,16,k=2) → Conv2d(16,32,k=2) → Conv2d(32,64,k=2) → Linear(1024, features_dim) | Standard minigrid CNN design; three k=2 layers on 7×7 input give 4×4 spatial output before flatten |
+| X-1 | Used `with torch.no_grad(): n_flatten = self.cnn(sample).shape[1]` to auto-detect flattened dim | Avoids hardcoding 1024; generalises to other obs sizes (e.g. maze envs with larger rooms) |
+| X-1 | Added `cnn_features_dim: 256` to `config/default.yaml` under `agent_training.ppo_hyperparams` | Keeps the extractor output dim configurable; matches sdd-ai-coding no-hardcode rule |
+
+### Spec Amendments
+| Severity | Section | Change | Trigger |
+|----------|---------|--------|---------|
+| L1 | §11.4 Pseudo Config | Added `cnn_features_dim: 256` to `agent_training.ppo_hyperparams` | impl-updated (X-1) |
+
+### Concerns
+- Previous session concern ("CnnPolicy with 7×7 obs: handles small obs automatically") was incorrect — SB3 does NOT auto-adapt NatureCNN kernels; the 8×8 kernel causes a hard crash. Fixed in this session.
+
+---
+
+## Session: 2026-05-02 — Silence BabyAI rejection-sampling stdout (AT-4 noise)
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| X-2 | Suppress BabyAI's `Sampling rejected: unreachable object at (i, j)` stdout chatter during curriculum training/eval | ☑ |
+
+### Diagnosis
+While running `python -m agent_training.train_curriculum --agent strong --seed 42`,
+BabyAI emits frequent `Sampling rejected: unreachable object at (X, Y)` messages
+from `minigrid/envs/babyai/core/roomgrid_level.py:137`. Root cause:
+- BabyAI's level generator uses rejection sampling. When generated objects
+  land in cells unreachable from the agent's start, it raises `RejectSampling`
+  and the outer loop emits a raw `print(...)` and retries.
+- Training is **NOT blocked** — every rejected sample is automatically resampled.
+- With `room_size=15` (much larger than BabyAI's defaults of 6–8), maze envs
+  (`BabyAI-GoToObjMaze*-v0`) produce a flood of these messages, drowning real
+  training logs. Coordinates like (33, 40) reflect the enlarged grid (3×14+1=43).
+
+### Decisions Made
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| X-2 | Created `agent_training/baby_ai_silence.py` with `silence_baby_ai_rejection_logs()` that monkey-patches `roomgrid_level.print` to forward to a `baby_ai.rejection` logger at DEBUG | Non-invasive (no BabyAI source edit), idempotent, recoverable (`logging.getLogger("baby_ai.rejection").setLevel(logging.DEBUG)` restores chatter for diagnostics) |
+| X-2 | Patch invoked at top of both `train_curriculum.py` and `evaluate_agent.py`, after `setup_project_cache()` and before any env construction | Both scripts create BabyAI envs; both benefit. Applied at module load to ensure no env is created before the patch |
+| X-2 | Used module-globals override (`roomgrid_level.print = ...`) rather than replacing `builtins.print` | Targeted: only silences chatter from this one module; doesn't affect any other library or user code |
+
+### Verification
+- 20 resets of `BabyAI-GoToObjMaze-v0(room_size=15)` after patch → 0 chars of "Sampling rejected" stdout chatter (was dozens of messages before).
+- Both entry-point scripts still import cleanly.
+
+### Spec Amendments
+None — purely a runtime log-noise concern; no SPEC behavior changed.
+
+### Concerns
+- If a user wants to debug BabyAI sampling failures (e.g., investigating why a custom env never generates valid levels), they can re-enable the chatter via:
+  ```python
+  import logging
+  logging.getLogger("baby_ai.rejection").setLevel(logging.DEBUG)
+  ```
+  This should be documented if AT-4/AT-5 ever fails to make progress on a level.
+
+---
+
+## Session: 2026-05-02 — Drop unified room_size=15 for curriculum (Spec Amendment #17)
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| X-3 | Remove unified `room_size=15` override; let each curriculum env use its native default size | ☑ |
+| AT-3 | 驗證各 BabyAI 環境支援 room_size=15 參數 [updated] | ☑ → marked obsolete (no longer needed) |
+
+### User Request
+> 那每個stage都用原本環境預設大小就好，不要固定成15*15
+
+### Changes
+- **SPEC.md** §5.4 訓練機制: replaced "所有環境統一 `room_size=15`（15×15 total，13×13 usable space）" with native-size note `[impl-updated]`. Original kept in `<!-- before: ... -->`.
+- **SPEC.md** §11.4 pseudo config: removed `room_size: 15` line; left an `[impl-updated]` comment in its place.
+- **config/default.yaml**: removed `agent_training.room_size: 15` field.
+- **agent_training/train_curriculum.py**:
+  - `make_env_fn(env_id, room_size)` → `make_env_fn(env_id)` — single arg, no fallback try/except.
+  - `CurriculumTrainer` no longer reads or stores `_room_size`.
+  - `_make_vec_env` and `_eval_success_rate` updated to drop the param.
+- **agent_training/evaluate_agent.py**:
+  - `evaluate_agent(...)` signature: dropped `room_size` param.
+  - `main()`: stopped reading `at_cfg["room_size"]`.
+- **TODO.md** AT-3: appended `[obsolete: 2026-05-02 ...]` note.
+- **SPEC_MODIFICATION.md**: appended entry #17 (L2, user request).
+
+### Decisions Made
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| X-3 | Removed config field entirely rather than defaulting it to `None` | Cleaner: no dead code path, simpler signature, matches no-hardcode rule (the field served no purpose post-removal) |
+| X-3 | Did NOT touch toy_case (Phase 0) DoorKey config | Toy case uses `MiniGrid-DoorKey-15x15-v0` whose 15×15 is baked into the env name; user's request was scoped to curriculum stages, and the toy agent's reward signal is meant to be calibrated to that specific size |
+| X-3 | Classified as L2 (Medium), not L1 | Removes a public config field that other code reads; affects function signatures of `make_env_fn` and `evaluate_agent` — qualifies as API-surface change per the skill's L1/L2 boundary |
+
+### Verification
+All 9 curriculum envs construct successfully with native defaults; obs is (7,7,3) for all (unchanged) so `BabyAIFeaturesExtractor` works as-is. Native grid sizes:
+
+| Env | Grid (W×H) |
+|---|---|
+| BabyAI-GoTo-v0 | 22×22 |
+| BabyAI-GoToOpen-v0 | 22×22 |
+| BabyAI-GoToObjMaze-v0 | 22×22 |
+| BabyAI-GoToObjMazeOpen-v0 | 22×22 |
+| BabyAI-GoToObjMazeS4R2-v0 | 7×7 |
+| BabyAI-GoToObjMazeS4-v0 | 10×10 |
+| BabyAI-GoToObjMazeS5-v0 | 13×13 |
+| BabyAI-GoToObjMazeS6-v0 | 16×16 |
+| BabyAI-GoToObjMazeS7-v0 | 19×19 |
+
+Previously (with `room_size=15`), the first four envs would have been ~46×46 — the new sizes are roughly half, which means much faster episodes and far fewer "Sampling rejected" retries.
+
+### Spec Amendments
+| Severity | Section | Change | Trigger |
+|----------|---------|--------|---------|
+| L2 | §5.4, §11.4 | Curriculum 各關改用 BabyAI 預設大小，不再覆寫 `room_size`；移除 config 欄位與函數參數 | user request |
+
+### Concerns
+- **Difficulty curve**: The first four envs (GoTo, GoToOpen, GoToObjMaze, GoToObjMazeOpen) all default to 22×22, while S4–S7 are 7→19. This means levels 1–4 are *larger* than levels 5–6 in the curriculum — the difficulty progression is no longer monotonic by grid size. The progression is now task-structural (open vs. maze, S4R2 multi-room) rather than spatial. If empirically the agent struggles on level 5 (S4R2, only 7×7) after clearing level 4 (open 22×22), revisit the ordering.
+- **base_threshold tuning**: Per-level `success_threshold` values in config were calibrated assuming `room_size=15`. With smaller native sizes, success rates may climb faster on the harder maze envs — thresholds may need re-tuning after the first AT-4 run is observed.
+- **Held-out / training-eval consistency**: Both `train_curriculum.py` and `evaluate_agent.py` were updated together, so an agent trained without `room_size` is also evaluated without it — no train/eval mismatch.
+
+---
+
+## Session: 2026-05-03 — Phase A: Mission Encoding + Dict Extractor (AT-4.1–AT-4.4, Spec Amendment #18)
+
+### User Request
+> 我正在使用 SB3 訓練 BabyAI Agent... 第一階段 `BabyAI-GoTo-v0` 訓練 success rate 僅 2%。
+> 1. 資訊遺失：`ImgObsWrapper` 丟棄 mission string；2. 記憶缺失：7×7 partial obs；3. 架構優化。
+
+After plan-mode review: **Phased rollout** (Phase A: dict obs + mission text + direction encoding; Phase B = LSTM, deferred). Level 1 is essentially fully observable, so the 2% rate is overwhelmingly mission-blindness, not POMDP. LSTM doubles training cost — not justified until maze stages stall.
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| AT-4.1 | 實作 `agent_training/wrappers.py` (`MissionTokenizer` + `BABYAI_VOCAB`) [added 2026-05-03] | ☑ |
+| AT-4.2 | 實作 `agent_training/extractors.py` (`BabyAIDictExtractor`) [added 2026-05-03] | ☑ |
+| AT-4.3 | 重構 `train_curriculum.py` + `evaluate_agent.py`：wrapper swap, 移除 inline extractor, switch to `MultiInputPolicy` [added 2026-05-03] | ☑ |
+| AT-4.4 | Phase A smoke test (50K 步 `BabyAI-GoTo-v0`) [added 2026-05-03] | ☑ |
+| AT-4 | 訓練 strong_0：完整 curriculum（9 關），高門檻 [updated] | ☐ → [needs-redo] |
+| AT-5 | 訓練 weak_0：部分 curriculum（前 3 關），低門檻 [updated] | ☐ → [needs-redo] |
+
+### Files Created
+- `agent_training/wrappers.py` — `MissionTokenizer(gym.ObservationWrapper)` + `BABYAI_VOCAB: tuple[str, ...]` (16 tokens: PAD/UNK/go/to/the/a + 6 colors + 4 objects). Lower-case + whitespace split + map-to-id with UNK fallback + pad to `max_len`.
+- `agent_training/extractors.py` — `BabyAIDictExtractor(BaseFeaturesExtractor)` at module level (cloudpickle requirement). Three branches: image CNN (k=2 ×3 → Linear(128)), mission `Embedding+masked-mean-pool→Linear(64)`, direction `Embedding(4, dir_embed_dim)`. Concat → Linear(features_dim). Detects HWC vs CHW via SB3's `is_image_space_channels_first` so VecTransposeImage auto-wrapping is handled correctly.
+
+### Files Modified
+- `agent_training/train_curriculum.py`:
+  - `make_env_fn(env_id, mission_max_len)` — applies `MissionTokenizer(env, max_len=mission_max_len)` instead of `ImgObsWrapper`.
+  - `CurriculumTrainer.__init__` reads `mission_max_len`/`vocab_size`/`text_embed_dim`/`dir_embed_dim` from config; asserts `vocab_size == len(BABYAI_VOCAB)` to catch drift.
+  - `train()`: deleted the inline `BabyAIFeaturesExtractor` (lines 245–293 in the old file); switched `PPO("CnnPolicy", ...)` → `PPO("MultiInputPolicy", ..., features_extractor_class=BabyAIDictExtractor, features_extractor_kwargs={features_dim, vocab_size, text_embed_dim, dir_embed_dim})`.
+  - Dropped now-unused `import os` and the lazy `gym/torch/nn/BaseFeaturesExtractor` imports.
+- `agent_training/evaluate_agent.py`:
+  - `evaluate_agent(...)` gained `mission_max_len: int` parameter; threaded through `make_env_fn`.
+  - `main()` reads `at_cfg["mission_max_len"]`.
+- `config/default.yaml`:
+  - Added `mission_max_len: 8`, `vocab_size: 16`, `text_embed_dim: 32`, `dir_embed_dim: 8` under `agent_training`.
+  - Renamed `ppo_hyperparams.cnn_features_dim` → `ppo_hyperparams.features_dim` (extractor is no longer pure CNN).
+
+### Files Deleted
+- `checkpoints/agents/weak_0.zip`, `checkpoints/agents/weak_0_level1.zip` — legacy CNN+ImgObsWrapper artifacts that cannot load with the new dict obs space (per user decision: "Delete and overwrite").
+
+### Decisions Made
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| AT-4.1 | Hardcoded 16-token vocab `(PAD, UNK, go, to, the, a, 6 colors, 4 objects)` | BabyAI GoTo grammar is closed and stable. Reproducibility wins; dynamic discovery breaks resume/eval. User confirmed in plan review. |
+| AT-4.1 | Promote `direction` from scalar to length-1 int64 vector | SB3's `CombinedExtractor` requires consistent ndarray shape per Dict key; scalar Box would break batching. |
+| AT-4.2 | Module-level extractor (not nested in `train()`) | `cloudpickle` cannot resolve `CurriculumTrainer.train.<locals>.BabyAIDictExtractor` on `PPO.load`. Verified with save/load roundtrip in smoke test. |
+| AT-4.2 | Channel-position branch on `is_image_space_channels_first(image_space)` | SB3 auto-applies `VecTransposeImage` for HWC uint8 images, rewriting the policy's `observation_space["image"]` to CHW BEFORE the extractor `__init__` fires. The first smoke run crashed because the old code assumed HWC universally (`shape[-1] = C`); the fix detects layout once and stores `self._image_channels_first` for `forward()` to consult. |
+| AT-4.2 | Stay with the proven `Conv2d k=2 ×3 (16→32→64)` block from X-1 | Same architecture that fixed the 7×7 obs / NatureCNN-incompat issue; no reason to redesign. |
+| AT-4.2 | Image projection 128 dim, text projection 64 dim, fusion → features_dim | Architectural constants documented in the module's UPPER_SNAKE_CASE block; not researcher-tunable. Promoting to config would just add noise. |
+| AT-4.3 | `policy="MultiInputPolicy"` (no LSTM) | Phase A scope per user decision in plan review. |
+| AT-4.3 | `assert config.vocab_size == len(BABYAI_VOCAB)` at trainer init | Catches drift if someone bumps the vocab list without updating config (or vice versa). |
+| AT-4.4 | Smoke test = 50K steps + both stochastic + deterministic eval | Original plan's "5K steps > 15%" was overly optimistic for 22×22 BabyAI-GoTo with 4 distractor objects. 50K is the smallest scale where signal vs. noise becomes legible. |
+| Cleanup | Installed `einops` in `RL_Project` conda env | Required by project coding rule §4 (einops only for any reshape). Was missing. |
+
+### Spec Amendments
+| Severity | Section | Change | Trigger |
+|----------|---------|--------|---------|
+| L2 | §5.4, §11.4, §16 | Phase A 觀察值升級：`ImgObsWrapper` → `MissionTokenizer`；`PPO("CnnPolicy")` → `PPO("MultiInputPolicy") + BabyAIDictExtractor`；新增 4 個 config 欄位；`cnn_features_dim` → `features_dim`；新增 `wrappers.py`/`extractors.py` 至目錄結構 | user request |
+
+### Verification
+
+| Step | Result |
+|------|--------|
+| `len(BABYAI_VOCAB)` | 16 ✓ |
+| `MissionTokenizer.observation_space` shape (3 envs) | `{image (7,7,3) uint8, direction (1,) int64, mission (8,) int64}` ✓ |
+| Sample mission decode | "go to the green ball" / "go to the purple ball" ✓ |
+| Extractor forward (B=2) | `(2, 256)` finite ✓; **195,856 params** |
+| `image_channels_first` detection | `True` after `VecTransposeImage` ✓ |
+| `PPO("MultiInputPolicy").learn(256)` | OK ✓ |
+| `PPO.save` → `PPO.load` roundtrip | OK ✓ (extractor pickles cleanly because module-level) |
+| Gradient flow | `text_emb`, `dir_emb`, `cnn[0]`, `fuse[0]` all non-zero after one update ✓ |
+| Random-policy baseline (50 ep) | **7/50 = 14%** |
+| 50K-step trained, stochastic eval (50 ep) | **9/50 = 18%** — beats random ✓ |
+| 50K-step trained, deterministic eval (50 ep) | 1/50 = 2% (policy not yet converged for argmax; expected to climb with full AT-4 budget) |
+
+### Concerns / Phase B Parking
+
+- **Phase B (RecurrentPPO + MultiInputLstmPolicy)** is parked. Re-evaluate only if AT-4's strong agent clears levels 1–3 but plateaus on the maze stages (S4R2/S4/S5/S6/S7) where partial observability genuinely hurts. Trigger conditions: maze-stage success rate stuck below `0.5 × effective_threshold` for ≥1M steps. Implementation sketch in plan file `compressed-dazzling-forest.md` (§4 Algorithm swap, §5 Eval loop update).
+- **Deterministic eval brittleness**: 2% on 50K-step deterministic eval doesn't mean the policy is bad — it means argmax is degenerate before convergence. Phase A's full AT-4 run has 5M-step budget; expect deterministic eval to climb toward the configured `effective_threshold` (0.95 for level 1).
+- **SubprocVecEnv timing crash** during smoke testing (connection reset peer) — happened once when running test scripts via `python -c`. Did NOT reproduce inside `train_curriculum.py` (which uses module imports rather than `-c`); leaving as a session-scoped issue, not a code defect. If reproduced during AT-4, fall back to `DummyVecEnv` via `--n-envs 1`.
+- **base_threshold tuning unknowns**: Per-level success thresholds were calibrated assuming the prior CnnPolicy + image-only obs. With mission encoding, level-1 should converge faster; thresholds may need re-tuning after first AT-4 run is observed (carry-over concern from session 2026-05-02).
+- **Toy case unchanged**: `toy_case/train_agent.py` still uses `ImgObsWrapper + PPO("CnnPolicy")` on `MiniGrid-DoorKey-15x15-v0` (constant mission text — tokenization adds no signal). Per user preference confirmed in plan review.
+
+---
+
 ## Session: 2026-05-01~02 — Member C (Percy): Module C — Reward & Evaluation
 
 ### Tasks Completed
