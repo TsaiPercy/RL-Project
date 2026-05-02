@@ -40,7 +40,7 @@
 |---|------|--------|-------|
 | AT-1 | 實作 `agent_training/train_curriculum.py` — BabyAI 環境 curriculum 訓練腳本 | ☐ | Per SPEC §5.4；含 curriculum 晉級邏輯、success rate 門檻判斷 |
 | AT-2 | 設計並配置 curriculum 成功率門檻（config 中各關卡門檻設定） | ☐ | Per SPEC §11.4；strong: 高門檻全 curriculum，weak: 低門檻部分 curriculum |
-| AT-3 | 驗證各 BabyAI 環境支援 room_size=15 參數 | ☐ | GoToObj, Unlock, KeyInBox, UnblockPickup, BlockedUnlockPickup, UnlockToUnlock, MiniBossLevel, BossLevel |
+| AT-3 | 驗證各 BabyAI 環境支援 room_size=15 參數 [updated] | ☐ | BabyAI-GoTo-v0, BabyAI-GoToOpen-v0, BabyAI-GoToObjMaze-v0, BabyAI-GoToObjMazeOpen-v0, BabyAI-GoToObjMazeS4R2-v0, BabyAI-GoToObjMazeS4-v0, BabyAI-GoToObjMazeS5-v0, BabyAI-GoToObjMazeS6-v0, BabyAI-GoToObjMazeS7-v0；注意 S4-S7 系列可能已有內建 grid size，需確認 room_size 參數是否生效 |
 | AT-4 | 訓練 strong_0：完整 curriculum（8 關），高門檻（~85-90%） | ☐ | 儲存至 `checkpoints/agents/strong_0.zip` |
 | AT-5 | 訓練 weak_0：部分 curriculum（前 3 關），低門檻（~50-60%） | ☐ | 儲存至 `checkpoints/agents/weak_0.zip` |
 | AT-6 | 訓練 held-out agents（strong_held_0, weak_held_0），使用不同 seed | ☐ | 儲存至 `checkpoints/agents/` |

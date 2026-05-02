@@ -15,3 +15,4 @@
 | 11 | 2026-05-01 | §5.4.1, §9 Toy Case | DoorKeyEnv size=13 → room_size=15（統一為 15×15 total, 13×13 usable） | user request | Modify × Cascading |
 | 12 | 2026-05-01 | §11.4 Pseudo Config | 新增 agent_training config block（curriculum 環境列表、成功率門檻、strong/weak 配置） | user request | Add × Cascading |
 | 13 | 2026-05-01 | §16 Directory Structure | 新增 `agent_training/` 目錄（train_curriculum.py, evaluate_agent.py） | user request | Add × Localized |
+| 14 | 2026-05-02 | §5.4, §11.4 | 將 8-task 多任務 curriculum 換為 9-env GoTo 家族單任務 curriculum；新增 per-env base threshold（0.90→0.60）；將 `success_threshold_override` 改為 `success_increase`（加法 delta）；將 `total_timesteps` 改為 `max_timesteps`；`curriculum_levels` 8→9 | user request | Modify × Cascading |
