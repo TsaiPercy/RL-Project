@@ -16,3 +16,6 @@
 | 12 | 2026-05-01 | §11.4 Pseudo Config | 新增 agent_training config block（curriculum 環境列表、成功率門檻、strong/weak 配置） | user request | Add × Cascading |
 | 13 | 2026-05-01 | §16 Directory Structure | 新增 `agent_training/` 目錄（train_curriculum.py, evaluate_agent.py） | user request | Add × Localized |
 | 14 | 2026-05-02 | §5.4, §11.4 | 將 8-task 多任務 curriculum 換為 9-env GoTo 家族單任務 curriculum；新增 per-env base threshold（0.90→0.60）；將 `success_threshold_override` 改為 `success_increase`（加法 delta）；將 `total_timesteps` 改為 `max_timesteps`；`curriculum_levels` 8→9 | user request | Modify × Cascading |
+| 15 | 2026-05-02 | §11.4 Pseudo Config | 新增 `eval_episodes: 50` 和 `eval_chunk_steps: 100_000` 至 `agent_training` block — 控制 curriculum 訓練中每次 success-rate 評估的 episode 數與訓練 chunk 大小 | impl-updated (AT-2) | L1 |
+| 16 | 2026-05-02 | §11.4 Pseudo Config | 新增 `cnn_features_dim: 256` 至 `agent_training.ppo_hyperparams`；新增 `BabyAIFeaturesExtractor`（kernel_size=2 小型 CNN）以替換 SB3 NatureCNN（8×8 kernel 不相容於 7×7 obs，導致 RuntimeError） | impl-updated (AT-4) | L1 |
+| 17 | 2026-05-02 | §5.4, §11.4 | Curriculum 各關卡改用 BabyAI 預設環境大小，不再統一覆寫 `room_size=15`；移除 `agent_training.room_size` config 欄位；移除 `make_env_fn` 與 `evaluate_agent` 的 `room_size` 參數及 try/except fallback；toy_case 的 DoorKey 15×15 不受影響（env name 已固定） | user request | L2 |
