@@ -59,6 +59,26 @@ BABYAI_VOCAB: tuple[str, ...] = (
 PAD_ID: int = 0
 UNK_ID: int = 1
 
+# Bounds for BabyAI's symbolic image observation.
+#
+# BabyAI's ``image`` is NOT an RGB rendering — each cell is encoded as
+# ``(object_type_id, color_id, state_id)``. Letting SB3 detect this as a
+# ``uint8`` image and divide by 255 crushes every value to 0.000-0.024,
+# starving the CNN of spatial signal. Setting the wrapped obs dtype to
+# ``int64`` (instead of ``uint8``) escapes SB3's image-space heuristic so
+# ``preprocess_obs`` only casts to float without normalising, and
+# ``VecTransposeImage`` is not auto-applied.
+#
+# Bounds are taken from minigrid as of v3.0.0 with a small headroom buffer
+# so a future minigrid upgrade adding a new object type or door state
+# doesn't silently corrupt the embedding lookup:
+#   minigrid.core.constants.OBJECT_TO_IDX has 11 entries (max id 10)
+#   minigrid.core.constants.COLOR_TO_IDX  has 6  entries (max id 5)
+#   door states are {open=0, closed=1, locked=2} (max id 2)
+NUM_OBJECT_TYPES: int = 12  # minigrid OBJECT_TO_IDX (11) + 1 headroom
+NUM_IMAGE_COLORS: int = 8  # minigrid COLOR_TO_IDX (6) + 2 headroom
+NUM_OBJECT_STATES: int = 4  # door states (3) + 1 headroom
+
 
 class MissionTokenizer(gym.ObservationWrapper):
     """Tokenize the BabyAI mission string into a fixed-length int64 array.
@@ -78,10 +98,17 @@ class MissionTokenizer(gym.ObservationWrapper):
     The new observation space is::
 
         Dict({
-            "image":     Box(uint8, (H, W, C)),
+            "image":     Box(int64, (H, W, C),  low=0, high=max_id),
             "direction": Box(int64, (1,),       low=0, high=3),
             "mission":   Box(int64, (max_len,), low=0, high=vocab_size-1),
         })
+
+    Note: ``image`` is intentionally exposed as ``int64`` (not ``uint8``)
+    so SB3 does NOT classify it as an image space and skips both the
+    ``VecTransposeImage`` auto-wrap and the ``/255`` normalisation in
+    ``preprocess_obs``.  The downstream extractor is expected to treat
+    each channel as a categorical id and embed it (per ``NUM_OBJECT_TYPES``,
+    ``NUM_IMAGE_COLORS``, ``NUM_OBJECT_STATES`` declared at module top).
     """
 
     def __init__(self, env: gym.Env, max_len: int) -> None:
@@ -104,9 +131,20 @@ class MissionTokenizer(gym.ObservationWrapper):
             )
 
         vocab_size: int = len(BABYAI_VOCAB)
+        # Reshape image space to int64 so SB3 stops treating it as an
+        # RGB image (avoiding /255 normalisation that crushes symbolic
+        # ids).  Cast happens inside ``observation()``.
+        max_image_id: int = max(
+            NUM_OBJECT_TYPES, NUM_IMAGE_COLORS, NUM_OBJECT_STATES
+        ) - 1
         self.observation_space = spaces.Dict(
             {
-                "image": base_space["image"],  # (H, W, C) uint8 — preserved
+                "image": spaces.Box(
+                    low=0,
+                    high=max_image_id,
+                    shape=base_space["image"].shape,  # (H, W, C)
+                    dtype=np.int64,
+                ),
                 "direction": spaces.Box(
                     low=0, high=3, shape=(1,), dtype=np.int64
                 ),
@@ -137,7 +175,7 @@ class MissionTokenizer(gym.ObservationWrapper):
         ids = ids + [PAD_ID] * (self._max_len - len(ids))
 
         return {
-            "image": obs["image"],  # (H, W, C) uint8
+            "image": obs["image"].astype(np.int64),  # (H, W, C) int64 (was uint8)
             "direction": np.asarray([int(obs["direction"])], dtype=np.int64),  # (1,)
             "mission": np.asarray(ids, dtype=np.int64),  # (max_len,)
         }

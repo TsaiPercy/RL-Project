@@ -1,17 +1,19 @@
 """BabyAI GoTo-family curriculum training for Phase 1-2 agent pool.
 
 Per SPEC §5.4 (Agent Pool) and §11.4 (Pseudo Config):
-  - strong_0: all 9 curriculum levels, effective_threshold = base + 0.05
+  - strong_0: all 7 curriculum levels, effective_threshold = base + 0.05
   - weak_0:   first 3 curriculum levels, effective_threshold = base - 0.25
   - Held-out variants (strong_held_0, weak_held_0) use different seeds.
 
-[impl-updated AT-4.x] Phase A observation pipeline:
+[impl-updated AT-4.x] Phase A→B observation + policy pipeline:
   Each BabyAI env is wrapped with ``MissionTokenizer`` which exposes a
-  Dict obs ``{image: (7,7,3) uint8, direction: (1,) int64,
-  mission: (L,) int64}``.  The policy is ``PPO("MultiInputPolicy")``
-  with ``BabyAIDictExtractor`` (CNN + token mean-pool + direction
-  embedding fusion).  This restores the mission signal that the prior
-  ``ImgObsWrapper + CnnPolicy`` setup discarded.
+  Dict obs ``{image: (7,7,3) int64, direction: (1,) int64,
+  mission: (L,) int64}``.  Phase B policy is
+  ``RecurrentPPO("MultiInputLstmPolicy")`` (sb3_contrib) with
+  ``BabyAIDictExtractor`` (CNN + token mean-pool + direction embedding
+  fusion) as the features extractor; an LSTM layer sits between the
+  extractor output and the policy/value heads, providing cross-step
+  memory for partial-obs maze navigation.
 
 Usage:
   python -m agent_training.train_curriculum --agent strong
@@ -141,6 +143,10 @@ class CurriculumTrainer:
         self._gamma: float = float(ppo.get("gamma", 0.99))
         self._ent_coef: float = float(ppo.get("ent_coef", 0.01))
         self._features_dim: int = int(ppo["features_dim"])
+        # Phase B LSTM hyperparams [impl-updated AT-B1].
+        self._lstm_hidden_size: int = int(ppo.get("lstm_hidden_size", 256))
+        self._n_lstm_layers: int = int(ppo.get("n_lstm_layers", 1))
+        self._enable_critic_lstm: bool = bool(ppo.get("enable_critic_lstm", True))
 
         # Phase A dict-obs / mission-encoding parameters [impl-updated AT-4.x].
         from agent_training.wrappers import BABYAI_VOCAB
@@ -149,6 +155,10 @@ class CurriculumTrainer:
         self._vocab_size: int = int(at_cfg["vocab_size"])
         self._text_embed_dim: int = int(at_cfg["text_embed_dim"])
         self._dir_embed_dim: int = int(at_cfg["dir_embed_dim"])
+        # AT-4.5: per-channel symbolic-image embedding dims.
+        self._obj_embed_dim: int = int(at_cfg["obj_embed_dim"])
+        self._color_embed_dim: int = int(at_cfg["color_embed_dim"])
+        self._state_embed_dim: int = int(at_cfg["state_embed_dim"])
         assert self._vocab_size == len(BABYAI_VOCAB), (
             f"config vocab_size ({self._vocab_size}) != len(BABYAI_VOCAB) "
             f"({len(BABYAI_VOCAB)}); update one to match the other"
@@ -175,9 +185,47 @@ class CurriculumTrainer:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _save_level_preview(self, env_id: str, level_idx: int) -> None:
+        """Render the first reset of env_id and save it as a PNG.
+
+        Creates a temporary env with render_mode="rgb_array" (separate from
+        the training vec-env) so the snapshot is always a fresh reset.
+        Output path: {checkpoint_dir}/{agent_id}_level{N}_preview.png.
+
+        Args:
+            env_id: BabyAI gymnasium env ID.
+            level_idx: Zero-based index of this curriculum level.
+        """
+        import gymnasium as gym
+
+        # minigrid env registration is guaranteed by this point — caller must
+        # invoke after _make_vec_env() so the import side-effect has run.
+        try:
+            from PIL import Image
+        except ImportError:
+            logger.warning("[train] Pillow not installed — skipping level preview.")
+            return
+
+        out_path = (
+            self._checkpoint_dir
+            / f"{self._agent_id}_level{level_idx + 1}_preview.png"
+        )
+        try:
+            env = gym.make(env_id, render_mode="rgb_array")
+            env.reset()
+            rgb = env.render()  # (H, W, 3) uint8
+            env.close()
+            Image.fromarray(rgb).save(out_path)
+            logger.info("[train] Level preview saved: %s", out_path)
+        except Exception as exc:
+            logger.warning(
+                "[train] Could not save level preview for %s: %s", env_id, exc
+            )
+
+
     def _eval_success_rate(
         self,
-        model,  # PPO instance — not typed to avoid importing SB3 at module level
+        model,  # RecurrentPPO instance — not typed to avoid import at module level
         env_id: str,
         n_episodes: int,
     ) -> float:
@@ -186,8 +234,12 @@ class CurriculumTrainer:
         Success is defined as episode return > 0 (consistent with MiniGrid's
         sparse reward: +1 for reaching goal, 0 otherwise).
 
+        Tracks LSTM hidden states across steps within each episode and resets
+        them at episode boundaries via the ``episode_start`` flag, as required
+        by ``RecurrentPPO.predict()`` [impl-updated AT-B2].
+
         Args:
-            model: Trained SB3 PPO model.
+            model: Trained sb3_contrib RecurrentPPO model.
             env_id: BabyAI gymnasium env ID to evaluate on.
             n_episodes: Number of evaluation episodes.
 
@@ -201,10 +253,18 @@ class CurriculumTrainer:
         successes = 0
         obs = eval_env.reset()
         episodes_done = 0
+        lstm_states = None  # (h, c) tuple; None triggers zero-init in RecurrentPPO
+        episode_starts = np.ones((1,), dtype=bool)  # (n_envs=1,) — True on first step
 
         while episodes_done < n_episodes:
-            action, _ = model.predict(obs, deterministic=True)
+            action, lstm_states = model.predict(
+                obs,
+                state=lstm_states,
+                episode_start=episode_starts,
+                deterministic=True,
+            )
             obs, reward, done, _info = eval_env.step(action)
+            episode_starts = done  # RecurrentPPO zeros LSTM state when True
             if done[0]:
                 if float(reward[0]) > 0.0:
                     successes += 1
@@ -253,13 +313,14 @@ class CurriculumTrainer:
         Returns:
             Path to the saved checkpoint (without ``.zip`` suffix).
         """
-        from stable_baselines3 import PPO
+        # Phase B: RecurrentPPO from sb3_contrib [impl-updated AT-B2].
+        from sb3_contrib import RecurrentPPO
 
         from agent_training.extractors import BabyAIDictExtractor
 
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        model: Optional[PPO] = None
+        model: Optional[RecurrentPPO] = None
         total_steps: int = 0
         first_learn_call: bool = True
 
@@ -281,10 +342,11 @@ class CurriculumTrainer:
             )
 
             train_env = self._make_vec_env(env_id, n_envs)
+            self._save_level_preview(env_id, level_idx)
 
             if model is None:
-                model = PPO(
-                    policy="MultiInputPolicy",
+                model = RecurrentPPO(
+                    policy="MultiInputLstmPolicy",
                     env=train_env,
                     learning_rate=self._lr,
                     n_steps=self._n_steps,
@@ -301,7 +363,13 @@ class CurriculumTrainer:
                             "vocab_size": self._vocab_size,
                             "text_embed_dim": self._text_embed_dim,
                             "dir_embed_dim": self._dir_embed_dim,
+                            "obj_embed_dim": self._obj_embed_dim,
+                            "color_embed_dim": self._color_embed_dim,
+                            "state_embed_dim": self._state_embed_dim,
                         },
+                        "lstm_hidden_size": self._lstm_hidden_size,
+                        "n_lstm_layers": self._n_lstm_layers,
+                        "enable_critic_lstm": self._enable_critic_lstm,
                     },
                 )
             else:
@@ -404,7 +472,7 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         choices=["strong", "weak"],
         required=True,
-        help="Agent type: 'strong' (all 9 levels, high threshold) or "
+        help="Agent type: 'strong' (all 7 levels, high threshold) or "
         "'weak' (first 3 levels, low threshold).",
     )
     parser.add_argument(

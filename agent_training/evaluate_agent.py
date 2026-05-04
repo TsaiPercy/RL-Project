@@ -58,7 +58,7 @@ def evaluate_agent(
     mission_max_len: int,
     deterministic: bool = True,
 ) -> dict[str, dict]:
-    """Evaluate an SB3 PPO agent on a list of BabyAI environments.
+    """Evaluate a RecurrentPPO agent on a list of BabyAI environments.
 
     For each env, runs ``n_episodes`` episodes and records success rate,
     mean return, and mean episode length.  A success is any episode with
@@ -67,10 +67,12 @@ def evaluate_agent(
     Per SPEC §5.4 [impl-updated], envs use their native default sizes; no
     ``room_size`` override is applied.  Each env is wrapped with
     ``MissionTokenizer`` so the agent receives the same dict observation
-    it was trained on.
+    it was trained on.  LSTM hidden states are tracked across steps within
+    each episode and zeroed at episode boundaries [impl-updated AT-B3].
 
     Args:
-        model_path: Path to saved SB3 model (with or without .zip suffix).
+        model_path: Path to saved sb3_contrib RecurrentPPO checkpoint
+            (with or without .zip suffix).
         env_ids: List of Gymnasium env IDs to evaluate on.
         n_episodes: Number of evaluation episodes per environment.
         mission_max_len: Token sequence length used by ``MissionTokenizer``.
@@ -81,7 +83,8 @@ def evaluate_agent(
         Dict mapping env_id → {"success_rate", "mean_return", "mean_length",
         "n_episodes"}.
     """
-    from stable_baselines3 import PPO
+    import numpy as np
+    from sb3_contrib import RecurrentPPO
     from stable_baselines3.common.vec_env import DummyVecEnv
 
     from agent_training.train_curriculum import make_env_fn
@@ -95,7 +98,7 @@ def evaluate_agent(
     )
 
     # Load model without binding to any env yet.
-    model = PPO.load(model_path_str)
+    model = RecurrentPPO.load(model_path_str)
 
     results: dict[str, dict] = {}
 
@@ -111,10 +114,18 @@ def evaluate_agent(
         episodes_done = 0
         episode_return = 0.0
         episode_length = 0
+        lstm_states = None  # (h, c) tuple; None → zero-init inside RecurrentPPO
+        episode_starts = np.ones((1,), dtype=bool)  # (n_envs=1,) boundary flag
 
         while episodes_done < n_episodes:
-            action, _ = model.predict(obs, deterministic=deterministic)
+            action, lstm_states = model.predict(
+                obs,
+                state=lstm_states,
+                episode_start=episode_starts,
+                deterministic=deterministic,
+            )
             obs, reward, done, _info = eval_env.step(action)
+            episode_starts = done  # RecurrentPPO zeros LSTM state when True
 
             episode_return += float(reward[0])
             episode_length += 1

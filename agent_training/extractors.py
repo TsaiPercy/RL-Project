@@ -1,24 +1,34 @@
 """Custom feature extractor for BabyAI dict observations.
 
 Per SPEC §5.4 [impl-updated]: ``BabyAIDictExtractor`` consumes the dict
-produced by ``MissionTokenizer`` and fuses three modalities into a single
-feature vector for SB3's ``MultiInputPolicy``::
+produced by ``MissionTokenizer`` (which exposes the symbolic image as
+``int64`` so SB3 does not RGB-normalise it) and fuses three modalities
+into a single feature vector for SB3's ``MultiInputPolicy``::
 
-    {"image": (B, C, H, W),    # uint8 image, transposed + normalised by SB3
-     "direction": (B, 1),       # int64 in {0,1,2,3} (cast to float by SB3)
-     "mission":  (B, L)}        # int64 token ids (cast to float by SB3)
+    {"image":     (B, H, W, 3),  # symbolic ids: object_type / color / state
+     "direction": (B, 1),         # int64 in {0,1,2,3} (cast to float by SB3)
+     "mission":   (B, L)}         # int64 token ids (cast to float by SB3)
 
-Pipeline (all dims from config; only the proven k=2 conv stack and the
-small projection widths are inline architectural constants):
+Pipeline:
 
-    image     -> Conv k=2 ×3 (C->16->32->64) -> Linear -> img_feat (B, 128)
-    mission   -> Embedding(vocab) -> mean-pool with PAD mask
-                 -> Linear         -> text_feat (B, 64)
-    direction -> Embedding(4)      -> dir_feat  (B, dir_embed_dim)
+    image (3 symbolic channels)
+      -> Embedding × 3 (object/color/state) -> concat per cell
+      -> CNN (k=2 ×3 on cell-embedding map)  -> Linear -> img_feat
+    mission   -> Embedding -> masked mean-pool -> Linear -> text_feat
+    direction -> Embedding(4)                                -> dir_feat
 
     [img_feat || text_feat || dir_feat] -> Linear -> features_dim
 
-The class is defined at module level (not inside a trainer method) so that
+Why per-channel embeddings (not a CNN-on-RGB): BabyAI's image is a
+symbolic encoding with values in 0-10, NOT pixel intensities.  Treating
+it as a uint8 RGB image causes SB3 to divide by 255, crushing every
+value to ~0 and starving the CNN of spatial signal — the policy then
+collapses to mission-conditioned random walk.  This module follows the
+BabyAI paper's standard recipe (Chevalier-Boisvert et al., 2018):
+embed each symbolic channel independently, then run a small CNN over
+the resulting cell-embedding feature map.
+
+The class is defined at module level (not inside a trainer method) so
 ``cloudpickle`` can resolve it on ``PPO.load(...)``.
 """
 
@@ -28,14 +38,17 @@ import torch
 import torch.nn as nn
 from einops import rearrange, reduce
 from gymnasium import spaces
-from stable_baselines3.common.preprocessing import is_image_space_channels_first
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
-# Image branch: a 3-conv k=2 stack that fits any partial obs >= 4x4.
-# This is the same architecture that AT-4 / X-1 validated to replace SB3's
-# NatureCNN (whose 8x8 first kernel exceeds the 7x7 BabyAI obs).  The
-# channel widths (16/32/64) and projection widths below are documented
-# architectural constants — not researcher-tunable hyperparameters.
+from agent_training.wrappers import (
+    NUM_IMAGE_COLORS,
+    NUM_OBJECT_STATES,
+    NUM_OBJECT_TYPES,
+)
+
+# CNN block on the embedded cell map.  The (16, 32, 64) channel widths
+# and k=2 kernel size are the same as the X-1 design that worked on the
+# 7x7 BabyAI obs (NatureCNN's k=8 is incompatible with 7x7).
 CONV1_OUT: int = 16
 CONV2_OUT: int = 32
 CONV3_OUT: int = 64
@@ -44,23 +57,32 @@ IMG_PROJ_DIM: int = 128
 TEXT_PROJ_DIM: int = 64
 NUM_DIRECTIONS: int = 4  # MiniGrid agent direction is in {0, 1, 2, 3}
 
+# Image-channel ordering matches BabyAI's ``OBJECT_TYPE_IDX/COLOR_IDX/STATE_IDX``
+# layout exposed by ``ImgObsWrapper`` and the raw env: cell = (type, color, state).
+IMG_CHANNEL_OBJECT: int = 0
+IMG_CHANNEL_COLOR: int = 1
+IMG_CHANNEL_STATE: int = 2
+
 
 class BabyAIDictExtractor(BaseFeaturesExtractor):
-    """Fuse BabyAI image, mission tokens, and direction into a feature vector.
+    """Fuse symbolic BabyAI image + mission tokens + direction into features.
 
-    SB3 invokes us with already-preprocessed inputs:
-      * image: ``Box(uint8, (H,W,C))`` is auto-transposed by
-        ``VecTransposeImage`` to ``(C,H,W)`` at the env level and
-        normalised to ``[0,1]`` by SB3's ``preprocess_obs``.
-      * mission/direction: ``Box(int64, ...)`` is cast to float by
+    SB3's pipeline before this extractor:
+      * image: ``Box(int64, (H,W,3))`` — NOT detected as an image space
+        (dtype is int64, not uint8), so neither ``VecTransposeImage`` nor
+        the ``/255`` normalisation fire. ``preprocess_obs`` casts to float.
+      * mission/direction: ``Box(int64, ...)`` cast to float by
         ``preprocess_obs``; we cast back to ``long()`` for embedding lookup.
 
     Args:
         observation_space: The Dict space produced by ``MissionTokenizer``.
         features_dim: Output dimension of the fused feature vector.
-        vocab_size: Size of the mission vocabulary (``len(BABYAI_VOCAB)``).
+        vocab_size: Mission vocabulary size (``len(BABYAI_VOCAB)``).
         text_embed_dim: Embedding width for mission tokens.
         dir_embed_dim: Embedding width for the agent direction.
+        obj_embed_dim: Embedding width for the image's object_type channel.
+        color_embed_dim: Embedding width for the image's color channel.
+        state_embed_dim: Embedding width for the image's state channel.
     """
 
     def __init__(
@@ -70,25 +92,20 @@ class BabyAIDictExtractor(BaseFeaturesExtractor):
         vocab_size: int,
         text_embed_dim: int,
         dir_embed_dim: int,
+        obj_embed_dim: int,
+        color_embed_dim: int,
+        state_embed_dim: int,
     ) -> None:
         super().__init__(observation_space, features_dim)
 
-        # Detect channel position once: SB3's ``VecTransposeImage`` rewrites
-        # the policy's image space from HWC to CHW before the extractor is
-        # built, but only when the original env produced HWC.  We support
-        # both so this extractor works whether or not the auto-transpose
-        # fired.  ``self._image_channels_first`` is consulted again inside
-        # ``forward`` because the runtime tensor layout always matches
-        # ``observation_space["image"]``.
-        image_space = observation_space["image"]
-        self._image_channels_first: bool = is_image_space_channels_first(image_space)
-        if self._image_channels_first:
-            n_channels: int = int(image_space.shape[0])  # (C, H, W) -> C
-        else:
-            n_channels = int(image_space.shape[-1])  # (H, W, C) -> C
+        # --- image (symbolic) branch ---
+        self.obj_emb = nn.Embedding(NUM_OBJECT_TYPES, obj_embed_dim)
+        self.color_emb_img = nn.Embedding(NUM_IMAGE_COLORS, color_embed_dim)
+        self.state_emb = nn.Embedding(NUM_OBJECT_STATES, state_embed_dim)
 
+        cell_emb_dim: int = obj_embed_dim + color_embed_dim + state_embed_dim
         self.cnn = nn.Sequential(
-            nn.Conv2d(n_channels, CONV1_OUT, kernel_size=KERNEL_SIZE),
+            nn.Conv2d(cell_emb_dim, CONV1_OUT, kernel_size=KERNEL_SIZE),
             nn.ReLU(),
             nn.Conv2d(CONV1_OUT, CONV2_OUT, kernel_size=KERNEL_SIZE),
             nn.ReLU(),
@@ -97,20 +114,23 @@ class BabyAIDictExtractor(BaseFeaturesExtractor):
             nn.Flatten(),
         )
 
-        # Auto-detect the flattened CNN output dim with a sample tensor that
-        # mirrors the runtime layout.  ``image_space.sample()`` follows the
-        # space's stored layout, so we only rearrange if the space is HWC.
+        # Auto-detect the flattened CNN output dim with a sample tensor
+        # that mirrors the runtime cell-embedding layout.
+        image_space = observation_space["image"]
+        h: int = int(image_space.shape[0])
+        w: int = int(image_space.shape[1])
         with torch.no_grad():
-            sample = torch.as_tensor(image_space.sample()[None]).float()  # (1, *space.shape)
-            if not self._image_channels_first:
-                sample = rearrange(sample, "b h w c -> b c h w")  # (1, C, H, W)
-            n_flat: int = self.cnn(sample).shape[1]  # (1, n_flat)
+            dummy_cells = torch.zeros(
+                1, cell_emb_dim, h, w, dtype=torch.float32
+            )  # (1, cell_emb_dim, H, W)
+            n_flat: int = self.cnn(dummy_cells).shape[1]  # (1, n_flat)
 
         self.img_proj = nn.Sequential(
             nn.Linear(n_flat, IMG_PROJ_DIM),
             nn.ReLU(),
         )
 
+        # --- mission text branch ---
         self.text_emb = nn.Embedding(
             num_embeddings=vocab_size,
             embedding_dim=text_embed_dim,
@@ -121,11 +141,13 @@ class BabyAIDictExtractor(BaseFeaturesExtractor):
             nn.ReLU(),
         )
 
+        # --- direction branch ---
         self.dir_emb = nn.Embedding(
             num_embeddings=NUM_DIRECTIONS,
             embedding_dim=dir_embed_dim,
         )
 
+        # --- fusion ---
         fused_dim: int = IMG_PROJ_DIM + TEXT_PROJ_DIM + dir_embed_dim
         self.fuse = nn.Sequential(
             nn.Linear(fused_dim, features_dim),
@@ -136,23 +158,25 @@ class BabyAIDictExtractor(BaseFeaturesExtractor):
         """Compute fused features from a batched dict observation.
 
         Args:
-            obs: Dict with keys ``image`` (B, C, H, W) float in [0,1],
-                ``direction`` (B, 1) float (cast int), ``mission``
-                (B, L) float (cast int).
+            obs: Dict with keys
+              ``image``     (B, H, W, 3) float (cast int64 by SB3),
+              ``direction`` (B, 1)        float,
+              ``mission``   (B, L)        float.
 
         Returns:
             Tensor of shape (B, features_dim).
         """
-        image = obs["image"]  # (B, *image_space.shape) float in [0, 1]
-        if not self._image_channels_first:
-            image = rearrange(image, "b h w c -> b c h w")  # (B, C, H, W)
-        cnn_out = self.cnn(image)  # (B, n_flat)
+        symbolic = obs["image"].long()  # (B, H, W, 3)
+        obj_e = self.obj_emb(symbolic[..., IMG_CHANNEL_OBJECT])  # (B, H, W, obj_e)
+        col_e = self.color_emb_img(symbolic[..., IMG_CHANNEL_COLOR])  # (B, H, W, col_e)
+        st_e = self.state_emb(symbolic[..., IMG_CHANNEL_STATE])  # (B, H, W, st_e)
+        cells_hwc = torch.cat([obj_e, col_e, st_e], dim=-1)  # (B, H, W, cell_emb_dim)
+        cells = rearrange(cells_hwc, "b h w c -> b c h w")  # (B, cell_emb_dim, H, W)
+        cnn_out = self.cnn(cells)  # (B, n_flat)
         img_feat = self.img_proj(cnn_out)  # (B, IMG_PROJ_DIM)
 
         tokens = obs["mission"].long()  # (B, L)
         token_embeds = self.text_emb(tokens)  # (B, L, text_embed_dim)
-        # Mean-pool over non-PAD tokens.  Shapes are commented end-to-end
-        # so the pooling math is auditable.
         mask = rearrange((tokens != 0).float(), "b l -> b l 1")  # (B, L, 1)
         masked = token_embeds * mask  # (B, L, text_embed_dim)
         denom = reduce(mask, "b l 1 -> b 1", "sum").clamp(min=1.0)  # (B, 1)
