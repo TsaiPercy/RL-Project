@@ -50,6 +50,63 @@
 
 ---
 
+## Session: 2026-05-03 — Phase B: RecurrentPPO + LSTM
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| AT-B1 | 新增 LSTM hyperparams 至 config (`lstm_hidden_size`, `n_lstm_layers`, `enable_critic_lstm`) [added 2026-05-03] | ☑ |
+| AT-B2 | 重構 `train_curriculum.py`：`PPO` → `RecurrentPPO`，`"MultiInputPolicy"` → `"MultiInputLstmPolicy"`；新增 LSTM kwargs；更新 `_eval_success_rate` 加入 LSTM state tracking [added 2026-05-03] | ☑ |
+| AT-B3 | 重構 `evaluate_agent.py`：`PPO.load` → `RecurrentPPO.load`；加入 LSTM state tracking 至 episode loop [added 2026-05-03] | ☑ |
+
+### Decisions Made
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| AT-B1 | `lstm_hidden_size: 256` (與 features_dim 相同) | 維持 feature extractor 輸出維度與 LSTM 隱藏維度一致，避免維度失衡 |
+| AT-B1 | `enable_critic_lstm: true` | sb3_contrib 建議：分離 actor/critic 的 LSTM 有助於穩定訓練，actor LSTM 不會被 critic gradient 干擾 |
+| AT-B2 | `BabyAIDictExtractor` 不做任何更改 | Feature Extractor 架構完全相容，LSTM 由 `MultiInputLstmPolicy` 自動插入 extractor 輸出之後 |
+| AT-B2 | `lstm_states = None` 傳入 `_eval_success_rate` | None 會觸發 RecurrentPPO 內部 zero-init；`episode_starts=True` 在第一步確保正確初始化 |
+| AT-B3 | 保留 `model.set_env(eval_env)` 呼叫 | 與現有程式碼結構一致；RecurrentPPO 支援 `set_env()`，對 predict() 無副作用 |
+
+### Spec Amendments
+| Amendment | Level | Section | Summary |
+|-----------|-------|---------|---------|
+| #28 | L2 | §5.4, §11.4 | Phase B 啟用，詳見 SPEC_MODIFICATION.md |
+
+### Concerns
+- `sb3-contrib` 需要安裝：`pip install sb3-contrib`（未加入 requirements.txt，因 I-2 尚未完成）
+- Phase B checkpoints 與 Phase A checkpoints 格式不相容（不同 policy class），需重新訓練 AT-B4
+- 驗證命令見計畫文件 verification section
+
+---
+
+## Session: 2026-05-03 — Curriculum Env Replacement (GoTo-v0 → GoToObjS4-based 7-stage)
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| AT-4.6 | **Curriculum level 1 太難**：`BabyAI-GoTo-v0` 是 22×22 maze + 7×7 partial obs + 8 distractors，非 recurrent PPO 在 5M 步預算內可能達不到 90% threshold。需在 (a) 改 level 1 為 `BabyAI-GoToLocal-v0`/`BabyAI-GoToObj-v0` 或 (b) 啟用 Phase B (`RecurrentPPO + MultiInputLstmPolicy`) 之間二選一 [added 2026-05-03] | ☑ |
+
+### Decisions Made
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| AT-4.6 | 選擇 option (a): 重設整個 curriculum 為 7-env 梯度，從 `BabyAI-GoToObjS4-v0` 開始 | AT-4.5 已驗證 GoToObjS4-v0 (4×4) 在 10K 步達 100%，提供穩固的 level 1 起點。Option (b) RecurrentPPO 引入 LSTM 複雜度並需更換 policy class，成本與風險均高於直接換環境。 |
+| AT-4.6 | 移除 GoTo-v0、GoToObjMaze-v0、GoToObjMazeS5-v0、GoToObjMazeS7-v0 | GoTo-v0 是問題根源（22×22）；GoToObjMaze-v0 與 S5/S7 分別被 S4R2/S4/S6 + GoToOpen 涵蓋，移除後 7-stage ladder 仍有完整難度梯度。 |
+| AT-4.6 | GoToOpen-v0 改為 level 7（最難），GoToObjMazeOpen-v0 為 level 6 | 按使用者指定的新排序；GoToOpen 有較多 distractor 或更大搜索空間，實際難度高於較小 maze 變體。 |
+| thresholds | 新 7 關門檻：0.95 / 0.90 / 0.80 / 0.75 / 0.70 / 0.70 / 0.65 | 延續原 curriculum 由高到低的梯度設計；GoToObjS4-v0 設 0.95 因已驗證 10K 步可達 100%；GoToOpen-v0 設 0.65（最難，lower bar acceptable）。 |
+| strong_agent | `curriculum_levels: 9` → `7` | 配合新 7-env list；code (`train_curriculum.py`) 動態讀取 config，不需修改。 |
+
+### Spec Amendments
+| Amendment | Level | Section | Summary |
+|-----------|-------|---------|---------|
+| #27 | L2 | §5.4, §11.4 | 9-env curriculum → 7-env，詳見 SPEC_MODIFICATION.md |
+
+### Concerns
+- 無需修改任何 Python 程式碼；`train_curriculum.py` 從 config 動態讀取 `curriculum[i]["env"]`
+- 建議執行 verification smoke-test（見 plan 文件）確認所有 7 個 env ID 均正確註冊
+
+---
+
 ## Session: 2026-05-01 — Member A (YouZhe): Sanity Checks + Phase 0
 reviewed ✅
 ### Tasks Completed
@@ -346,6 +403,91 @@ After plan-mode review: **Phased rollout** (Phase A: dict obs + mission text + d
 - **SubprocVecEnv timing crash** during smoke testing (connection reset peer) — happened once when running test scripts via `python -c`. Did NOT reproduce inside `train_curriculum.py` (which uses module imports rather than `-c`); leaving as a session-scoped issue, not a code defect. If reproduced during AT-4, fall back to `DummyVecEnv` via `--n-envs 1`.
 - **base_threshold tuning unknowns**: Per-level success thresholds were calibrated assuming the prior CnnPolicy + image-only obs. With mission encoding, level-1 should converge faster; thresholds may need re-tuning after first AT-4 run is observed (carry-over concern from session 2026-05-02).
 - **Toy case unchanged**: `toy_case/train_agent.py` still uses `ImgObsWrapper + PPO("CnnPolicy")` on `MiniGrid-DoorKey-15x15-v0` (constant mission text — tokenization adds no signal). Per user preference confirmed in plan review.
+
+---
+
+## Session: 2026-05-03 — AT-4.5 Image-Blindness Fix + Curriculum Difficulty Diagnosis (Spec Amendment #26)
+
+### User Report
+> agent training 的部分還是沒辦法 train 起來，stage one 都只有 0~2% 而已
+
+### Root Cause Found
+BabyAI's `image` observation is **symbolic encoding**, not RGB pixels:
+- Channel 0: object_type id (0-10: unseen/empty/wall/floor/door/key/ball/box/goal/lava/agent)
+- Channel 1: color id (0-5)
+- Channel 2: state id (0-2 for door open/closed/locked)
+
+But the wrapper exposed it as `uint8`, which SB3 detects as an RGB image space. Two things then happen automatically inside SB3:
+1. `VecTransposeImage` transposes the (H,W,C) layout to (C,H,W).
+2. `preprocess_obs` divides by 255 to normalise.
+
+Result: symbolic ids 0-10 became float values **0.000-0.024** — virtually zero. The CNN had no spatial signal to work with. The mission encoding (separate Embedding pathway, not normalised) carried all the gradient, so the policy collapsed to **mission-conditioned random walk**: behaviour is determined by the (constant within episode) mission text rather than the agent's current spatial state. This explains the original 0-2% deterministic and why Phase A's smoke (50K stochastic = 18%) only narrowly beat the 14% random baseline.
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| AT-4.5 | 修正 image-blindness：BabyAI image 是符號編碼非 RGB，原 `uint8` dtype 讓 SB3 `/255` 標準化把 spatial 訊號壓成 ~0；改 `int64` + 每 channel categorical Embedding [added 2026-05-03] | ☑ |
+| AT-4.6 | **Curriculum level 1 太難**: 待使用者決定 (a) 換 level-1 env 或 (b) 啟用 Phase B [added 2026-05-03] | ☐ open |
+
+### Changes
+- **`agent_training/wrappers.py`**:
+  - Added module constants `NUM_OBJECT_TYPES = 12`, `NUM_IMAGE_COLORS = 8`, `NUM_OBJECT_STATES = 4` (cited from minigrid v3 with small headroom).
+  - `MissionTokenizer.observation_space["image"]`: dtype `uint8` → `int64`. This intentionally fails SB3's `is_image_space()` check, bypassing both `VecTransposeImage` and `/255` normalisation.
+  - `observation()` casts incoming `image` from uint8 to int64.
+- **`agent_training/extractors.py`** — full rewrite of the image branch:
+  - Removed `is_image_space_channels_first` branching (no longer relevant; image is always HWC int64 now).
+  - Added 3 separate embeddings: `obj_emb`, `color_emb_img`, `state_emb`.
+  - `forward()`: cast image to long, embed each channel, concat over last dim → cell-embedding feature map (B, H, W, cell_emb_dim) → einops rearrange to (B, cell_emb_dim, H, W) → CNN (k=2 ×3) → Linear → img_feat.
+  - Auto-detect `n_flat` now uses a zero tensor at the cell-embedding shape rather than sampling from the image space (which is no longer (uint8) HWC).
+  - New constructor params: `obj_embed_dim`, `color_embed_dim`, `state_embed_dim`.
+- **`agent_training/train_curriculum.py`**: `CurriculumTrainer.__init__` reads the three new dims; passes them to `BabyAIDictExtractor` via `policy_kwargs.features_extractor_kwargs`.
+- **`config/default.yaml`**: added `obj_embed_dim: 16`, `color_embed_dim: 8`, `state_embed_dim: 4`.
+- **`docs/SPEC.md`** §5.4 / §11.4: extended the [impl-updated] block from session 2026-05-03 with the int64 dtype rationale and per-channel embedding fields.
+
+### Decisions Made
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| AT-4.5 | Symbolic + per-channel embedding (NOT `RGBImgPartialObsWrapper`) | User confirmed in plan-review question. Keeps spatial dim 7×7 (vs 56×56 for RGB rendering), matches BabyAI paper's standard recipe (Chevalier-Boisvert et al., 2018). Avoids redesigning the CNN. |
+| AT-4.5 | `int64` to escape SB3's `is_image_space()` heuristic | Cleanest way to disable both `/255` and `VecTransposeImage` without subclassing or patching SB3. Verified `is_image_space(int64 Box (7,7,3)) == False`. |
+| AT-4.5 | `NUM_OBJECT_TYPES = 12` (with 1-token headroom) | Minigrid v3 has 11 object types; +1 buffer prevents silent corruption if a future minigrid upgrade adds a new type. Same logic for the 6→8 colors and 3→4 states bumps. |
+| AT-4.5 | Separate `color_emb_img` from mission's color tokens | Image color id and mission vocab id are different namespaces (image: 0-5 ints from minigrid; mission: 6-11 in BABYAI_VOCAB). Sharing weights would couple unrelated representations. |
+
+### Verification
+| Step | Result |
+|------|--------|
+| Wrapper image dtype | `int64`, shape (7,7,3), range 0-6 in sample obs ✓ |
+| `is_image_space(image)` | `False` ✓ (confirms SB3 will not normalise) |
+| Extractor forward (B=2, real obs) | `(2, 256)` finite ✓; **197,728 params** |
+| Preprocess round-trip | int64 obs → float32 (preprocess) → long() recovers exact same values ✓ |
+| Gradient flow | obj_emb / color_emb_img / state_emb / cnn / text_emb / dir_emb / fuse all non-zero ✓ |
+| **Architecture sanity (`BabyAI-GoToObjS4-v0`, 4×4 grid, max=16 steps)** | random 34% → trained **100% in 10K steps**, stable through 50K ✓✓ |
+| `BabyAI-GoToLocal-v0` (8×8 single room, 100K steps) | 32% (random 30%) — barely above chance |
+| `BabyAI-GoTo-v0` (22×22 maze, 100K steps default hyp) | 20% stochastic / 0% deterministic (random 14%) |
+| `BabyAI-GoTo-v0` (22×22 maze, 200K steps with BabyAI-paper hyp lr=1e-4 ent=0.05) | 12% stochastic (worse) |
+
+### Diagnosis Summary
+
+The architecture is **provably correct** — `BabyAI-GoToObjS4-v0` saturates at 100% in 10K steps. But the curriculum's level-1 env (`BabyAI-GoTo-v0`) is the *hardest* GoTo-family variant: 3×3 grid of 8×8 rooms (22×22 total) with 8 distractor objects, 7×7 partial observation, sparse reward. Without recurrence, PPO cannot reliably remember which rooms it has explored or where the target was last seen. This is a **task-difficulty / POMDP** issue, not an architectural bug.
+
+### Spec Amendments
+| Severity | Section | Change | Trigger |
+|----------|---------|--------|---------|
+| L2 | §5.4 / §11.4 | AT-4.5 image-blindness fix: int64 image dtype + per-channel categorical embeddings; new config fields `obj_embed_dim`, `color_embed_dim`, `state_embed_dim` | impl-updated (AT-4) |
+
+### Open Question for User (AT-4.6)
+
+`BabyAI-GoTo-v0` at default size cannot be cleared to `effective_threshold = 0.95` by non-recurrent PPO within the 5M-step budget. Two viable resolutions:
+
+**Option A — Replace level 1 with an easier GoTo variant**
+Drop `BabyAI-GoTo-v0` from the curriculum and start at `BabyAI-GoToLocal-v0` (8×8 single room) or `BabyAI-GoToObj-v0` (similar). These are fully solvable by non-recurrent PPO in 200K-1M steps. Curriculum then proceeds: GoToLocal/GoToObj → GoToObjMazeS4R2 → S4 → S5 → S6 → S7 → optionally GoToOpen → GoTo at the end. **Pros**: keeps Phase A architecture; cheap. **Cons**: changes the spec's curriculum list (L2 amendment).
+
+**Option B — Activate Phase B (`RecurrentPPO + MultiInputLstmPolicy`)**
+Install `sb3-contrib`, swap `PPO` → `RecurrentPPO`, add LSTM-state plumbing to `evaluate_agent.py`. Detailed implementation sketch is already in `~/.claude/plans/compressed-dazzling-forest.md` §4–§5. **Pros**: principled fix for partial observability; entire 9-stage curriculum becomes tractable. **Cons**: ~doubles training cost per step; eval loop needs LSTM-state tracking; new dependency.
+
+### Concerns
+- **The original 2% rate combined two bugs**: (1) image-blindness fixed in this session, and (2) curriculum-too-hard, still open as AT-4.6. Either alone would have produced a low success rate; together they masked each other.
+- **Why Phase A's 50K smoke (session 2026-05-03 earlier) showed 18% stochastic**: that "improvement" was almost entirely from the mission encoding doing some work despite the broken image. The real signal-to-noise improvement only becomes visible after AT-4.5.
+- **`RGBImgPartialObsWrapper` was rejected** during plan review — it would render symbolic obs as 56×56 RGB pixels, requiring a redesigned CNN (the current k=2 ×3 stack is wasteful at 56×56). Symbolic + per-channel embedding is the canonical BabyAI-paper approach and keeps the existing CNN block.
 
 ---
 

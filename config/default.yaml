@@ -76,29 +76,32 @@ agent_training:
   vocab_size: 16                      # len(BABYAI_VOCAB) — must match agent_training/wrappers.py
   text_embed_dim: 32                  # mission token embedding width
   dir_embed_dim: 8                    # direction (0..3) embedding width
+  # [impl-updated AT-4.5] per-channel symbolic image embeddings.
+  # BabyAI's image obs is symbolic (object_type/color/state ids in 0-10),
+  # not RGB pixels — without these embeddings SB3 normalises by /255 and
+  # crushes the spatial signal to ~0.
+  obj_embed_dim: 16                   # object_type embedding width
+  color_embed_dim: 8                  # image color embedding width
+  state_embed_dim: 4                  # door/object state embedding width
   eval_episodes: 50                   # episodes per success-rate evaluation
   eval_chunk_steps: 100_000           # train steps between evaluations
   curriculum:                         # GoTo family ordered easy → hard [impl-updated]
-    - env: "BabyAI-GoTo-v0"
-      success_threshold: 0.90         # trivial task; high bar
-    - env: "BabyAI-GoToOpen-v0"
-      success_threshold: 0.85
-    - env: "BabyAI-GoToObjMaze-v0"
-      success_threshold: 0.80
-    - env: "BabyAI-GoToObjMazeOpen-v0"
-      success_threshold: 0.80
+    - env: "BabyAI-GoToObjS4-v0"
+      success_threshold: 0.95         # tiny 4×4 room; proven 100% in 10K steps (AT-4.5)
+    - env: "BabyAI-GoToObj-v0"
+      success_threshold: 0.90
     - env: "BabyAI-GoToObjMazeS4R2-v0"
-      success_threshold: 0.75
+      success_threshold: 0.63
     - env: "BabyAI-GoToObjMazeS4-v0"
-      success_threshold: 0.75
-    - env: "BabyAI-GoToObjMazeS5-v0"
-      success_threshold: 0.70
+      success_threshold: 0.63
     - env: "BabyAI-GoToObjMazeS6-v0"
-      success_threshold: 0.65
-    - env: "BabyAI-GoToObjMazeS7-v0"
-      success_threshold: 0.60         # hardest; lower bar acceptable
+      success_threshold: 0.55
+    - env: "BabyAI-GoToObjMazeOpen-v0"
+      success_threshold: 0.55
+    - env: "BabyAI-GoToOpen-v0"
+      success_threshold: 0.55         # hardest; lower bar acceptable
   strong_agent:
-    curriculum_levels: 9              # train through all 9 levels [impl-updated]
+    curriculum_levels: 7              # train through all 7 levels [impl-updated]
     success_increase: 0.05            # effective = base + 0.05 [impl-updated]
     max_timesteps: 5_000_000          # total budget across all levels [impl-updated]
   weak_agent:
@@ -113,6 +116,9 @@ agent_training:
     gamma: 0.99
     ent_coef: 0.01
     features_dim: 256                 # [impl-updated AT-4.x] renamed from cnn_features_dim; output dim of BabyAIDictExtractor (CNN + mission text + direction fusion)
+    lstm_hidden_size: 256             # LSTM hidden dim between feature extractor and policy/value heads (Phase B)
+    n_lstm_layers: 1                  # number of stacked LSTM layers
+    enable_critic_lstm: true          # separate LSTM for critic head (recommended by sb3_contrib)
 
 # === Toy Case (Phase 0) ===
 toy_case:

@@ -127,8 +127,7 @@ L = -E[advantage * log π(y|x)] + kl_coeff * KL(π || π_ref)
 | 8 | BossLevel | 最難 | 終極複合任務 |
 -->
 
-| # | 環境名稱 | 難度 | 說明 |
-|---|----------|------|------|
+<!-- before:
 | 1 | BabyAI-GoTo-v0 | 最簡單 | GoTo（基本，開放空間） |
 | 2 | BabyAI-GoToOpen-v0 | 簡單 | GoTo（開放房間，無門） |
 | 3 | BabyAI-GoToObjMaze-v0 | 中等 | GoTo（迷宮地形） |
@@ -138,6 +137,17 @@ L = -E[advantage * log π(y|x)] + kl_coeff * KL(π || π_ref)
 | 7 | BabyAI-GoToObjMazeS5-v0 | 高 | GoTo（maze size 5） |
 | 8 | BabyAI-GoToObjMazeS6-v0 | 高 | GoTo（maze size 6） |
 | 9 | BabyAI-GoToObjMazeS7-v0 | 最難 | GoTo（maze size 7） |
+-->
+
+| # | 環境名稱 | 難度 | 說明 |
+|---|----------|------|------|
+| 1 | BabyAI-GoToObjS4-v0 | 最簡單 | GoTo（4×4 tiny room；AT-4.5 驗證 10K 步達 100%） |
+| 2 | BabyAI-GoToObj-v0 | 簡單 | GoTo（預設 open room，單房間） |
+| 3 | BabyAI-GoToObjMazeS4R2-v0 | 中等 | GoTo（maze size 4, 2 rooms） |
+| 4 | BabyAI-GoToObjMazeS4-v0 | 中高 | GoTo（maze size 4） |
+| 5 | BabyAI-GoToObjMazeS6-v0 | 高 | GoTo（maze size 6，較大搜索空間） |
+| 6 | BabyAI-GoToObjMazeOpen-v0 | 高 | GoTo（open-style maze） |
+| 7 | BabyAI-GoToOpen-v0 | 最難 | GoTo（open room，較多 distractor；lower bar acceptable） | [impl-updated]
 
 #### 訓練機制
 
@@ -145,16 +155,25 @@ L = -E[advantage * log π(y|x)] + kl_coeff * KL(π || π_ref)
 <!-- before: 所有環境統一 `room_size=15`（15×15 total，13×13 usable space） -->
 - 各環境使用 BabyAI 預設大小，不再統一覆寫 `room_size`（避免大型 maze 過慢與 rejection-sampling 噪音；agent obs 仍為 7×7×3） [impl-updated]
 <!-- before: Strong agent：通過完整 curriculum（所有 8 關），門檻設定較高（如 85-90%）; Weak agent：僅通過部分 curriculum（如前 3-4 關），或門檻設定較低（如 50-60%）; 透過調整門檻與訓練關卡數量，可靈活製造不同程度的強弱差異 -->
-- **Strong agent**：通過完整 curriculum（所有 9 關），各關 effective threshold = base + `success_increase` (+0.05) [updated]
+- **Strong agent**：通過完整 curriculum（所有 7 關），各關 effective threshold = base + `success_increase` (+0.05) [impl-updated]
 - **Weak agent**：僅通過部分 curriculum（前 3 關），各關 effective threshold = base + `success_increase` (−0.25) [updated]
 - 透過 `success_increase` 調整各關 effective threshold 與 `curriculum_levels` 限制訓練關卡數，靈活製造強弱差異 [updated]
 <!-- before: agent uses ImgObsWrapper + PPO("CnnPolicy") on (7,7,3) image only; mission string discarded -->
+<!-- before AT-4.5: image exposed as uint8 (H,W,3); SB3 detected it as RGB image and divided by 255, crushing symbolic ids 0-10 to ~0 — agent collapsed to mission-conditioned random walk -->
 - 觀察值處理：`MissionTokenizer` wrapper 將原始 BabyAI dict obs 轉為
-  `{image: (7,7,3) uint8, direction: (1,) int64, mission: (L,) int64}`；
-  policy 為 `PPO("MultiInputPolicy")` + `BabyAIDictExtractor`
-  （CNN + token mean-pool + direction embedding 融合）。修正 BabyAI-GoTo-v0
-  mission-blindness（agent 過去無法得知目標物件）。Phase A 不導入 LSTM；
-  若後續 maze 階段卡關再評估 RecurrentPPO（Phase B，目前 deferred）。 [impl-updated]
+  `{image: (7,7,3) int64, direction: (1,) int64, mission: (L,) int64}`；
+  **image 以 int64 暴露**以避開 SB3 的 RGB 標準化（BabyAI image 是符號編碼
+  `(object_type, color, state)`，非 RGB 像素）。policy 為 `PPO("MultiInputPolicy")`
+  + `BabyAIDictExtractor`（每 channel 各自 Embedding → cell-embedding 特徵圖
+  → CNN + 任務 token mean-pool + direction embedding 融合）。修正 BabyAI-GoTo-v0
+  mission-blindness 與 image-blindness。
+<!-- before: Phase A 不導入 LSTM；若後續 maze 階段卡關再評估 RecurrentPPO（Phase B，目前 deferred）。 -->
+  **Phase B 已啟用**：policy 從 `PPO("MultiInputPolicy")` 升級為
+  `RecurrentPPO("MultiInputLstmPolicy")`（`sb3_contrib`）；LSTM 層插入
+  `BabyAIDictExtractor` 輸出（features_dim=256）與 Policy/Value Head 之間，
+  提供跨 time-step 記憶，解決 partial-obs maze 的遮擋問題。Feature Extractor
+  架構不變。新增 config 欄位：`lstm_hidden_size`、`n_lstm_layers`、
+  `enable_critic_lstm`。[impl-updated]
 
 #### Agent Pool 配置
 
@@ -729,6 +748,10 @@ agent_training:
   vocab_size: 16                      # len(BABYAI_VOCAB) — must match agent_training/wrappers.py
   text_embed_dim: 32
   dir_embed_dim: 8
+  # [impl-updated AT-4.5] per-channel symbolic-image embedding dims
+  obj_embed_dim: 16                   # object_type embedding width
+  color_embed_dim: 8                  # image color embedding width
+  state_embed_dim: 4                  # door/object state embedding width
   curriculum:                         # ordered from easy to hard (GoTo family, single task) [updated]
     # effective_threshold = success_threshold + agent.success_increase
     - env: "BabyAI-GoTo-v0"
