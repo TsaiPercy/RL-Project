@@ -1,5 +1,55 @@
 # Implementation Record
 
+## Session: 2026-05-07 — Member A (YouZhe): 4090 記憶體優化 + Qwen3.5 採樣 + 15×15 grid 重構
+
+### Tasks Completed
+| ID | Description | Status |
+|----|-------------|--------|
+| MA-MEM-1 | Gradient checkpointing + `enable_input_require_grads()`（QLoRA on 4090 必開） | ☑ |
+| MA-MEM-2 | 移除獨立 ref model，`get_ref_log_probs` 改用 PEFT `disable_adapter()` 共用 base | ☑ |
+| MA-MEM-3 | `_compute_log_probs` / `_compute_current_log_probs` 用 `gather − logsumexp` 取代 `log_softmax` | ☑ |
+| MA-MEM-4 | Flash Attention 2 + `_resolve_attn_implementation()`，缺 flash-attn 自動 fallback SDPA | ☑ |
+| MA-MEM-5 | `update()` 加 `micro_batch_size` 參數：動態切 chunk + 梯度累積 + 1 次 `optimizer.step()` | ☑ |
+| MA-MEM-6 | `generate()` 加 `compute_log_probs` flag、`output_scores=False` 一律不開、推理期間 try/finally 暫開 `use_cache` | ☑ |
+| LLM-CFG-1 | `LLMPolicy.__init__` 新增 `enable_thinking, top_p, top_k, presence_penalty` 參數，全從 config 讀 | ☑ |
+| LLM-CFG-2 | `generate_with_chat_template` 透傳 `enable_thinking` 到 `apply_chat_template`（Qwen3.5 官方 thinking 控制路徑） | ☑ |
+| CFG-1 | `config/default.yaml`：移除 `gradient_accumulation_steps`，加 `micro_batch_size: 1`、`enable_thinking: false`；採樣對齊官方（T 0.8→0.7, top_p 0.95→0.8, top_k 20, presence_penalty 1.5）；`grid_size 13→15` | ☑ |
+| TC-SMOKE-1 | 新增 `toy_case/train_smoke_test.py` 訓練 path 記憶體驗證腳本 | ☑ |
+| FIX-1 | `toy_case/sanity_check.py` 補傳 `cache_dir` 給 `LLMPolicy` | ☑ |
+| GRID-1 | LLM 輸出格式：13×13 inner area → 完整 15×15 含外牆 ring；座標 [0,12] → [1,13] | ☑ |
+| GRID-2 | `simple_parse()` 一系列強化：reasoning 防呆（`</think>` 砍除 + `rfind("Grid:")`）、外牆完整性、object×object/agent×object 重疊、object/agent on internal wall、goal 恰好一個 | ☑ |
+| DOC-1 | 對應更新 SPEC §3/§11、SPEC_MODIFICATION #20–#25、CLAUDE.md、TOY_CASE.md、TODO.md、shared/types.py + type_examples.py | ☑ |
+
+### Decisions Made
+| Task | Decision | Rationale |
+|------|----------|-----------|
+| MA-MEM-1 | `gradient_checkpointing_enable(use_reentrant=False)` | reentrant 版本與 PEFT `disable_adapter()` 互斥，會在 ref forward 拋錯 |
+| MA-MEM-3 | `gather − logsumexp` 取代 `log_softmax(...).gather(...)` | 不 materialize (B, seq, vocab=152K) softmax 副本（bf16 一份 ~6.4GB） |
+| MA-MEM-5 | chunk loss weight = `chunk_size / actual_b` 而非 `1/n_chunks`；`clip_grad_norm_` 累積完才做一次 | 處理「最後一塊不足 micro_batch_size」餘數情況；clip 必須在累積完整梯度上做 |
+| MA-MEM-6 | `output_scores=False` 即使要 log_probs 也不開 | scores 經 temperature/top_p 後處理，跟 raw logits 不一致；GRPO 要 raw policy log prob |
+| MA-MEM-6 | 推理 try/finally 暫開 `use_cache=True` | 訓練要關 (KV cache vs grad 衝突)，推理沿用會災難 |
+| CFG-1 | 移除 `gradient_accumulation_steps`、改用 `micro_batch_size` | GRPO effective batch = batch_size × group_size 已固定；保留 accumulation 跟 group_size 耦合容易打架 |
+| LLM-CFG-2 | 走 `apply_chat_template(enable_thinking=False)` 而非 `/no_think` | Qwen3.5 不認 `/no_think`（官方 model card 明示）；先試 `/no_think` 已驗證無效（模型改用散文 reasoning，吃完 max_new_tokens 仍未寫到 Grid:） |
+| GRID-1 | 座標 `[1, 13]` 嚴格（不能蓋外牆）而非 `[0, 14]` 寬鬆 | 避免物件覆蓋外牆；parser 一致檢查外牆完整性 |
+| GRID-2 | overlap 用 `dict[(x,y) → type]` | 衝突時可同時報出兩邊（不只「重疊」，還告訴你跟誰重疊） |
+
+### Spec Amendments
+詳見 `SPEC_MODIFICATION.md` #20–#25：
+- **#20**：LLMPolicy 4 項記憶體優化（gradient ckpt / disable_adapter ref / logsumexp / flash attn）
+- **#21**：`generate()` 加 `compute_log_probs` flag、`output_scores` 改 False、推理暫開 `use_cache`
+- **#22**：`update()` 加 `micro_batch_size`，config 移除 `gradient_accumulation_steps`
+- **#23**：嘗試 `/no_think` + `simple_parse()` 加 reasoning 防呆（後續 #24 證實 `/no_think` 在 Qwen3.5 無效，但防呆保留）
+- **#24**：改 `apply_chat_template(enable_thinking=False)`，採樣參數對齊 Qwen3.5 官方
+- **#25**：LLM grid 13×13 inner → 完整 15×15 含外牆 ring，座標 [0,12] → [1,13]，parser 加外牆完整性與多項 overlap 檢查
+
+### Concerns
+- **未實機驗證**：所有改動都通過 `ast.parse` 與 unit-style assertion，但 GPU 上沒跑過。建議順序：(1) `rm -rf results/sanity_check/ && python -m toy_case.sanity_check --num-levels 100`（預期 parse rate 從 ≤10% 跳到 50%+）；(2) `python -m toy_case.train_smoke_test --batch-size 1 --group-size 2 --num-iterations 1` 最小規模驗證訓練 path 不爆 → (3) 拉到 config 真實規模 (`--num-iterations 1`)。
+- **`presence_penalty` 暫未生效**：HF `generate()` 沒原生支援，目前只把參數收進 `__init__`；若實機看到大量重複 token（如連續 `..........`）需要加 `LogitsProcessorList`。
+- **flash-attn 未安裝**：log 顯示 fallback SDPA，少省 1-2GB；若 4090 仍緊建議 `pip install flash-attn --no-build-isolation`。
+- **Module B parser 仍 ☐**：`game_env/parser.py` 未實作；座標/外牆/overlap 驗證邏輯應參考 `simple_parse()` 抽出共用 helper（不要複製貼上）。連通性檢查 (BFS + key/door 順序) 是 Module B 責任，不在 sanity_check 範疇。
+
+---
+
 ## Session: 2026-05-01 — Member A (YouZhe): Sanity Checks + Phase 0
 reviewed ✅
 ### Tasks Completed

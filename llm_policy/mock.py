@@ -37,9 +37,10 @@ Grid:
   "objects": [
     {"type": "key", "x": 1, "y": 5, "color": "yellow"},
     {"type": "door", "x": 4, "y": 4, "color": "yellow"},
-    {"type": "goal", "x": 12, "y": 12}
+    {"type": "ball", "x": 12, "y": 12, "color": "blue"}
   ],
-  "agent_start": {"x": 0, "y": 0, "dir": 0}
+  "agent_start": {"x": 0, "y": 0, "dir": 0},
+  "goal": 2
 }"""
 
 MOCK_INVALID_LEVEL = """\

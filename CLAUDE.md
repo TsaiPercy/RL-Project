@@ -43,11 +43,14 @@ shared/types.py      # Shared dataclasses (canonical source of truth)
 
 ## Key Data Contracts
 
-**MiniGrid level JSON** (LLM output format, defined by Module A, consumed by Module B):
+**MiniGrid level format** (LLM output, defined by Module A, consumed by Module B) [impl-updated 2026-05-07]:
+LLM 輸出完整 15×15 ASCII grid（含外牆 ring）+ 隨後的 JSON（objects + agent_start）。
+外牆為固定 'W' ring（row/col 0 與 14），objects 與 agent_start 座標限制在 inner area `[1, 13]`。
+詳見 `llm_policy/prompts.py:MINIGRID_LEVEL_PROMPT`。
 ```json
-{"width": 8, "height": 8,
+{"width": 15, "height": 15,
  "objects": [{"type": "wall|key|door|ball|box|goal|lava", "x": 2, "y": 3, "color": "yellow"}],
- "agent_start": {"x": 0, "y": 0, "dir": 0}}
+ "agent_start": {"x": 1, "y": 1, "dir": 0}}
 ```
 
 **Agent pool IDs**: `strong_0`, `strong_1`, `weak_0`, `weak_1` (training); `strong_held_0`, `strong_held_1`, `weak_held_0` (eval only).

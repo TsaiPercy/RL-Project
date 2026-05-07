@@ -104,13 +104,17 @@ def run_pipeline_with_mock(config: dict) -> None:
     parse_results: list[ParseResult] = []
     for text in gen_output.texts:
         if "Grid:" in text:
+            # [impl-updated 2026-05-07] 15×15 含外牆；inner area row/col 1-13
+            outer_wall = "W" * 15
+            inner_row = "W" + "." * 13 + "W"
             parse_results.append(ParseResult(
                 success=True,
                 level_config={
-                    "width": 13, "height": 13,
-                    "grid": ["............."] * 13,
-                    "objects": [{"type": "goal", "x": 12, "y": 12}],
-                    "agent_start": {"x": 0, "y": 0, "dir": 0},
+                    "width": 15, "height": 15,
+                    "grid": [outer_wall] + [inner_row] * 13 + [outer_wall],
+                    "objects": [{"type": "ball", "x": 13, "y": 13, "color": "blue"}],
+                    "agent_start": {"x": 1, "y": 1, "dir": 0},
+                    "goal": 0,
                 },
             ))
         else:
@@ -234,7 +238,11 @@ def run_pipeline_real(config: dict) -> None:
         lora_alpha=config.get("lora_alpha", 128),
         lora_target_modules=config.get("lora_target_modules"),
         max_new_tokens=config.get("max_new_tokens", 2048),
-        temperature=config.get("temperature", 0.8),
+        temperature=config.get("temperature", 0.7),
+        top_p=config.get("top_p", 0.8),
+        top_k=config.get("top_k", 20),
+        presence_penalty=config.get("presence_penalty", 1.5),
+        enable_thinking=config.get("enable_thinking", False),
         cache_dir=config.get("cache_dir"),
     )
 

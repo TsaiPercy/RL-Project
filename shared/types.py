@@ -46,14 +46,13 @@ class ParseResult:
             "height": 13,
             "grid": list[str],          # 13 行，每行 13 字元 ('W' 或 '.')
             "objects": list[dict],       # 物件清單，見下方說明
-            "agent_start": {"x": int, "y": int, "dir": 0-3}
+            "agent_start": {"x": int, "y": int, "dir": 0-3},
+            "goal": int                 # 0-based index into objects, GoTo 目標
         }
 
     可用物件 (objects 內的 dict):
         - wall:  由 grid 中 'W' 定義，不出現在 objects 清單
         - floor: 由 grid 中 '.' 定義，不出現在 objects 清單
-        - goal:  {"type": "goal", "x": int, "y": int}
-                 終點，Agent 走到即過關。整個關卡恰好一個。
         - key:   {"type": "key", "x": int, "y": int, "color": str}
                  鑰匙，可撿起，用來開同色 locked door。
         - door:  {"type": "door", "x": int, "y": int, "color": str, "state": str}
@@ -66,7 +65,8 @@ class ParseResult:
                  {"type": "box", ..., "contains": {"type": "key", "color": str}}
 
     顏色可用: red, green, blue, purple, yellow, grey
-    座標範圍: x ∈ [0, 12], y ∈ [0, 12]
+    座標範圍: x ∈ [1, 13], y ∈ [1, 13]   # [impl-updated 2026-05-07] LLM grid 改為含外牆 15×15；
+                                          # 0 與 14 是 outer wall ring，objects/agent 限制在 inner area
     agent_start.dir: 0=right, 1=down, 2=left, 3=up
     """
     success: bool

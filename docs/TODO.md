@@ -80,13 +80,29 @@
 | MA-3 | 實作 `llm_policy/grpo.py` — GRPO update（或整合 TRL GRPOTrainer） | ☐ | GRPO update 已整合在 policy.py 內；grpo.py 可後續獨立抽出 |
 | MA-4 | 撰寫 LLMPolicy mock（API 簽名正確 + 隨機值） | ☑ | Per SPEC §11；供 B, C 獨立測試 |
 
+### Memory Optimisation (4090 / QLoRA 9B) [added 2026-05-07]
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| MA-MEM-1 | Gradient checkpointing + `enable_input_require_grads()` | ☑ | Per SPEC Amendment #20；節省 ~36GB activation；必須 `use_reentrant=False` 才能與 PEFT `disable_adapter()` 共存 |
+| MA-MEM-2 | 移除獨立 reference model，改用 PEFT `disable_adapter()` | ☑ | Per SPEC Amendment #20；省 ~5GB（不再多載一份 9B 4-bit 權重） |
+| MA-MEM-3 | `_compute_log_probs` 用 logsumexp 取代 log_softmax | ☑ | Per SPEC Amendment #20；省 (B, seq, vocab=152K) softmax 副本 ~1.3GB |
+| MA-MEM-4 | Flash Attention 2，fallback SDPA | ☑ | Per SPEC Amendment #20；attention O(seq²)→O(seq)；缺 `flash-attn` 自動退回 SDPA |
+| MA-MEM-5 | `update()` 加 micro-batching + grad accumulation | ☑ | Per SPEC Amendment #22；`update(grpo_batch, micro_batch_size)` 動態切 chunk + 梯度累積；config 移除 `gradient_accumulation_steps`，改用 `micro_batch_size: 1` |
+| TC-SMOKE-1 | 新增 `toy_case/train_smoke_test.py` — 訓練 path 記憶體驗證 | ☑ | generate(compute_log_probs=True) → get_ref_log_probs → mock rewards → update；CLI 可覆寫 batch/group/micro/iterations |
+| TC-SMOKE-2 | 在 4090 實機跑 smoke test，先小規模 (B=1, G=2, micro=1) 再真實規模 (B=4, G=16, micro=1) | ☐ | `python -m toy_case.train_smoke_test --batch-size 1 --group-size 2 --num-iterations 1` 確認能跑後再拉真實 config 規模看 peak memory |
+| MA-MEM-6 | `generate()` 加 `compute_log_probs: bool` flag + 推理時暫開 `use_cache` + 不再強制 `output_scores=True` | ☑ | Per SPEC Amendment #21；sanity_check.py 已改傳 `compute_log_probs=False`；省 ~6.6GB logits 暫態 + 6.2GB output_scores 累積 |
+| MA-MEM-7 | 安裝 flash-attn 並確認 `attn_implementation` 實際生效（看載入時的 log） | ☐ | `pip install flash-attn --no-build-isolation`；目前 fallback 到 sdpa，少省 1-2GB |
+| MA-MEM-8 | （optional）optimizer 換 `bitsandbytes.optim.PagedAdamW8bit` | ☐ | LoRA-only 訓練幫助有限（~1GB），但峰值仍緊時可試 |
+| MA-MEM-9 | （optional）降 `max_new_tokens` 2048 → 1024 並驗證輸出長度足夠 | ☐ | 15×15 grid + JSON 通常 ~700-1100 tokens 已足；activation & KV cache 直接砍半 |
+
 ## Module Implementation — Module B: Game Environment
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | MB-1 | 實作 `game_env/parser.py` — ASCII grid 解析（W/. → wall/floor） | ☐ | Per SPEC §3, §11 Module B |
 | MB-2 | 實作 `game_env/parser.py` — JSON objects 解析 + schema 驗證 | ☐ | Per SPEC §11 Module B |
-| MB-3 | 實作 `game_env/parser.py` — 語義驗證（連通性、起終點、物件不重疊、座標 0-12） | ☐ | Per SPEC §11 Module B |
+| MB-3 | 實作 `game_env/parser.py` — 語義驗證（連通性、起終點、物件不重疊、外牆完整、座標 [1, 13]） | ☐ | Per SPEC §11 Module B [impl-updated 2026-05-07] |
 | MB-4 | 實作 `game_env/environment.py` — GameEnvironment class（構建 MiniGrid 15×15 環境） | ☐ | Per SPEC §11 Module B |
 | MB-5 | 實作 `game_env/environment.py` — run_rollouts()（SubprocVecEnv + BabyAI agent） | ☐ | Per SPEC §11 Module B |
 | MB-6 | 實作 `game_env/environment.py` — batch_evaluate()（整合 parse + rollout） | ☐ | Per SPEC §11 Module B |

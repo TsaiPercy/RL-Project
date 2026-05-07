@@ -1,0 +1,31 @@
+# conda env update --file environment.yml --prune
+name: RL_project
+channels:
+  - defaults
+  - conda-forge
+
+dependencies:
+  - python=3.12
+  - pip
+  - conda-forge::ffmpeg
+
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch
+      - torchvision
+      - transformers
+      - peft
+      - bitsandbytes
+      - einops
+      - stable-baselines3>=2.0
+      - gymnasium
+      - minigrid>=2.3
+      - wandb
+      - matplotlib
+      - numpy
+      - pyyaml
+      - numpy
+      - Pillow
+      - rich
+      - ninja -i https://pypi.tuna.tsinghua.edu.cn/simple
+      - flash-attn

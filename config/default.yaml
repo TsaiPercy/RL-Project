@@ -5,7 +5,8 @@
 
 # === Game ===
 game: "minigrid"                    # "minigrid" or "minihack"
-grid_size: 13                       # usable space (total = grid_size + 2 = 15)
+# [impl-updated 2026-05-07] LLM 改為輸出完整 15×15 grid（含外牆 W ring）
+grid_size: 15                       # full grid size (LLM outputs 15×15 incl. outer walls; objects/agent in [1,13])
 
 # === LLM Policy (Module A) ===
 model_name: "Qwen/Qwen3.5-9B"
@@ -21,15 +22,27 @@ lora_target_modules:
   - up_proj
   - down_proj
 max_new_tokens: 2048
-temperature: 0.8
+# [impl-updated 2026-05-07] Qwen3.5 non-thinking 模式官方建議採樣參數。
+# Per https://huggingface.co/Qwen/Qwen3.5-9B model card。
+enable_thinking: false              # Qwen3.5 chat template 旗標；false = 跳過 reasoning 直接答（QwenSpec 不支援 /no_think directive，必須走這個路徑）
+temperature: 0.7                    # 官方建議 non-thinking 0.7
+top_p: 0.8                          # 官方建議 non-thinking 0.8（原本寫死在 generate() 裡的 0.95 太散）
+top_k: 20                           # 官方建議
+presence_penalty: 1.5               # 官方建議，抑制重複 token
 
 # === GRPO Training ===
-group_size: 16                      # samples per prompt
+group_size: 8                      # samples per prompt
 kl_coeff: 0.05
 learning_rate: 1.0e-5
-batch_size: 4                       # prompts per batch (total = 4 × 16 = 64 levels)
+batch_size: 2                       # prompts per batch (total = 4 × 16 = 64 levels)
 num_iterations: 500
-gradient_accumulation_steps: 1
+# [impl-updated 2026-05-07] 移除 gradient_accumulation_steps（與
+# micro_batch_size 概念重複；GRPO 的 effective batch 已由
+# batch_size × group_size 決定，不需另外指定累積次數）。
+micro_batch_size: 4                 # GPU 一次 forward+backward 幾條序列；
+                                    # update() 內部累積 ceil(B*G / micro)
+                                    # 個 chunk 的梯度後做 1 次 optimizer.step()。
+                                    # 4090 + Qwen 9B QLoRA 設 1；A100/H100 可試 2-4。
 
 # === Reward (Module C) ===
 regret_weight: 1.0

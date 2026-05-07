@@ -21,35 +21,37 @@
 
 **輸出**：
 - LLM 生成的關卡描述，包含兩部分：
-  1. **ASCII Grid**（13×13 可用空間）：每個 cell 一個字元，定義牆壁（`W`）與地板（`.`）的基本地形
-  2. **JSON**：定義物件放置位置（key、door、goal、lava 等）與 agent 起始位置
+  1. **ASCII Grid**（[impl-updated 2026-05-07] 完整 15×15 含外牆 ring）：每個 cell 一個字元，定義牆壁（`W`）與地板（`.`）的基本地形；外圍 row/col 0 與 14 必須全為 `W`
+  2. **JSON**：定義物件放置位置（key、door、goal、lava 等）與 agent 起始位置；座標限制在 inner area `[1, 13]`
 - 格式：結構化文字（ASCII grid + JSON），~200-1000 tokens
-- MiniGrid 環境實際大小為 15×15（含外牆），可用空間 13×13
+- MiniGrid 環境實際大小為 15×15（含外牆），inner playable area 13×13（座標 1-13）
 
-**輸出格式範例**：
+**輸出格式範例** [impl-updated 2026-05-07]：
 ```
 Grid:
-.............
-.............
-..WWW........
-....W........
-.............
-.............
-.............
-.............
-.............
-.............
-.............
-.............
-.............
+WWWWWWWWWWWWWWW
+W.............W
+W..WWW........W
+W....W........W
+W.............W
+W.............W
+W.............W
+W.............W
+W.............W
+W.............W
+W.............W
+W.............W
+W.............W
+W.............W
+WWWWWWWWWWWWWWW
 
 {
   "objects": [
     {"type": "key", "x": 1, "y": 5, "color": "yellow"},
     {"type": "door", "x": 4, "y": 4, "color": "yellow"},
-    {"type": "goal", "x": 12, "y": 12}
+    {"type": "goal", "x": 13, "y": 13}
   ],
-  "agent_start": {"x": 0, "y": 0, "dir": 0}
+  "agent_start": {"x": 1, "y": 1, "dir": 0}
 }
 ```
 
@@ -576,7 +578,16 @@ class EvalReport:
 
 **關鍵配置**: QLoRA 4-bit, LoRA rank=64, alpha=128, target modules: q/k/v/o/gate/up/down_proj
 
-**依賴**: Transformers, PEFT, TRL（或自行實作 GRPO）, bitsandbytes
+**[impl-updated 2026-05-07] 4090 記憶體優化**（Spec Amendments #20, #21, #22）：
+- **Gradient checkpointing 預設開啟** (`gradient_checkpointing=True`)：以 ~30% backward 時間成本換 ~70% activation memory；QLoRA 9B 在 24GB 必開。實作上呼叫 `gradient_checkpointing_enable(use_reentrant=False)` + `enable_input_require_grads()`，後者讓 embedding 輸出 requires_grad，避免 4-bit base 凍結切斷 autograd graph。
+- **Reference model 不再獨立載入**：原本 `_load_reference_model` 會多載一份 9B 4-bit 權重（~5GB）。改用 PEFT 的 `model.disable_adapter()` context manager，讓同一個 base 在沒有 LoRA adapter 的情況下做 forward，當作 π_ref。`get_ref_log_probs` 內部包成 `with torch.no_grad(), self.model.disable_adapter():`。`self.ref_model` 保留為 `None`（backward compat）。
+- **Selective log-prob via logsumexp**：原本 `log_softmax(logits).gather(token_ids)` 會 materialize `(B, seq, vocab=152K)` 的 softmax 副本，bf16 一份 6.4GB+。改成 `gather(logits, token_ids) − logsumexp(logits, dim=-1)`，數學等價但只留 `(B, seq)` 大小的中間張量。封裝在 `_gather_token_log_probs()` static helper，`_compute_log_probs` 與 `_compute_current_log_probs` 共用。
+- **Flash Attention 2 預設開啟** (`use_flash_attention=True`)：attention activation 從 O(seq²) 降到 O(seq)。`_resolve_attn_implementation()` 會 try `import flash_attn`，缺套件則 fallback 到 `sdpa` 並記 warning。`from_pretrained` 透過 `attn_implementation=` 設定。
+- **`generate()` 加 `compute_log_probs: bool = True` 參數**（Amendment #21）：False 時跳過冗餘的 `_compute_log_probs` 全序列 forward（推理場景省 ~6.6GB）。同時 `output_scores=False` 一律不開（從未被使用，省 ~6.2GB 累積暫態）；generation 期間 try/finally 暫時設 `use_cache=True` 並還原（訓練用 False 是 KV cache vs. grad 衝突；推理沿用會災難）。
+- **`update()` 加 `micro_batch_size: Optional[int] = None` 參數**（Amendment #22）：支援梯度累積。當給定 micro_batch_size 時，把 `grpo_batch` 沿 dim0 切成 `ceil(B / micro_batch_size)` 個 chunk，逐個 forward+backward（chunk loss 乘 `chunk_size / actual_b` 加權），梯度累加完成後 `clip_grad_norm_` + `optimizer.step()` 一次。數學等價於一次處理 B 條（mean over B），但 peak memory 取決於 micro_batch_size 而非 B。對應 config 移除 `gradient_accumulation_steps`，改用 `micro_batch_size`。
+- **Qwen3.5 thinking mode + 採樣參數對齊官方**（Amendment #24）：Qwen3.5 不支援 Qwen3 的 `/no_think` directive，必須走 `tokenizer.apply_chat_template(messages, ..., enable_thinking=False)`。`__init__` 新增 `enable_thinking`, `top_p`, `top_k`, `presence_penalty` 參數（皆從 config 讀）；`generate_with_chat_template` 透傳 `enable_thinking` 到 chat template；`generate()` 移除 hardcoded `top_p=0.95`，改用 `self.top_p` / `self.top_k`。config 對應加 `enable_thinking: false`, `top_p: 0.8`, `top_k: 20`, `presence_penalty: 1.5`，`temperature` 0.8 → 0.7（對齊 Qwen3.5 model card non-thinking 建議）。同時 `MINIGRID_SYSTEM_PROMPT` 移除無效的 `/no_think` 後綴。
+
+**依賴**: Transformers, PEFT, TRL（或自行實作 GRPO）, bitsandbytes, flash-attn（optional，缺則退回 SDPA）
 
 **子模組**:
 - `policy.py` — LLMPolicy class
@@ -591,7 +602,7 @@ class EvalReport:
 
 **輸入/輸出**:
 - `parse_level(llm_output: str) → ParseResult`
-  - 從文字提取 ASCII grid + JSON → grid 驗證 → schema 驗證 → 語義驗證（起終點、連通性、物件不重疊、座標範圍 0-12）
+  - 從文字提取 ASCII grid + JSON → grid 驗證（15×15 含外牆 ring）→ schema 驗證 → 語義驗證（起終點、連通性、物件不重疊、座標範圍 [1, 13]）
 - `run_rollouts(level_config: dict, num_rollouts_per_agent: int) → RolloutResult`
   - 使用 SubprocVecEnv 平行化 rollout
 - `batch_evaluate(llm_outputs: list[str], num_rollouts_per_agent: int) → list[RolloutResult | None]`
@@ -653,7 +664,8 @@ class EvalReport:
 ```yaml
 # === Game ===
 game: "minigrid"                    # "minigrid" or "minihack"
-grid_size: 13                       # usable space (total = grid_size + 2)
+# [impl-updated 2026-05-07] LLM 改為輸出完整 15×15 含外牆 ring；inner playable area 1-13
+grid_size: 15                       # full grid size (LLM outputs 15×15 incl. outer walls)
 
 # === LLM Policy (Module A) ===
 model_name: "Qwen/Qwen3.5-9B"
@@ -669,7 +681,12 @@ lora_target_modules:
   - up_proj
   - down_proj
 max_new_tokens: 2048
-temperature: 0.8
+# [impl-updated 2026-05-07 Amendment #24] Qwen3.5 non-thinking 採樣對齊官方
+enable_thinking: false              # apply_chat_template 旗標；Qwen3.5 不支援 /no_think directive
+temperature: 0.7
+top_p: 0.8
+top_k: 20
+presence_penalty: 1.5
 
 # === GRPO Training ===
 group_size: 16                      # samples per prompt
@@ -677,7 +694,11 @@ kl_coeff: 0.05
 learning_rate: 1.0e-5
 batch_size: 4                       # prompts per batch (total = 4 × 16 = 64 levels)
 num_iterations: 500
-gradient_accumulation_steps: 1
+# [impl-updated 2026-05-07 Amendment #22] gradient_accumulation_steps 移除，
+# 改用 micro_batch_size（GRPO 場景下兩者語義重複）。
+micro_batch_size: 1                 # GPU 一次 forward+backward 幾條序列；
+                                    # update() 內部累積 ceil(B*G / micro)
+                                    # 個 chunk 後做 1 次 optimizer.step()
 
 # === Reward (Module C) ===
 regret_weight: 1.0

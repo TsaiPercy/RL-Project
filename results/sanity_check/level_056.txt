@@ -1,0 +1,28 @@
+Grid:
+WWWWWWWWWWWWWWW
+W..W........W
+W.WWW.WWWWWW
+W..W..W.....W
+W...W.W.....W
+W....W.W....W
+W.....W.....W
+W......W....W
+W.......W...W
+W........W..W
+W.........W.W
+W..........W.W
+W...........W
+W............W
+WWWWWWWWWWWWWWW
+
+{
+  "objects": [
+    {"type": "key", "x": 1, "y": 1, "color": "red"},
+    {"type": "door", "x": 3, "y": 1, "color": "red"},
+    {"type": "key", "x": 10, "y": 10, "color": "blue"},
+    {"type": "door", "x": 12, "y": 10, "color": "blue"},
+    {"type": "ball", "x": 13, "y": 13, "color": "green"}
+  ],
+  "agent_start": {"x": 1, "y": 1, "dir": 0},
+  "goal": 4
+}

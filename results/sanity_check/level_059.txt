@@ -1,0 +1,36 @@
+Grid:
+WWWWWWWWWWWWWWW
+W.WW.WW.WW.WW.W
+W.W.W.W.W.W.W.W
+W.WW.WW.WW.WW.W
+W.W.W.W.W.W.W.W
+W.WW.WW.WW.WW.W
+W.W.W.W.W.W.W.W
+W.WW.WW.WW.WW.W
+W.W.W.W.W.W.W.W
+W.WW.WW.WW.WW.W
+W.W.W.W.W.W.W.W
+W.WW.WW.WW.WW.W
+W.W.W.W.W.W.W.W
+WWWWWWWWWWWWWWW
+WWWWWWWWWWWWWWW
+
+{
+  "objects": [
+    {"type": "key", "x": 2, "y": 2, "color": "red"},
+    {"type": "door", "x": 2, "y": 2, "color": "red"},
+    {"type": "key", "x": 4, "y": 4, "color": "blue"},
+    {"type": "door", "x": 4, "y": 4, "color": "blue"},
+    {"type": "key", "x": 6, "y": 6, "color": "green"},
+    {"type": "door", "x": 6, "y": 6, "color": "green"},
+    {"type": "key", "x": 8, "y": 8, "color": "yellow"},
+    {"type": "door", "x": 8, "y": 8, "color": "yellow"},
+    {"type": "key", "x": 10, "y": 10, "color": "purple"},
+    {"type": "door", "x": 10, "y": 10, "color": "purple"},
+    {"type": "key", "x": 12, "y": 12, "color": "grey"},
+    {"type": "door", "x": 12, "y": 12, "color": "grey"},
+    {"type": "ball", "x": 7, "y": 7, "color": "orange"}
+  ],
+  "agent_start": {"x": 7, "y": 7, "dir": 0},
+  "goal": 12
+}

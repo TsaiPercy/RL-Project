@@ -1,6 +1,7 @@
 """
 各 dataclass 的範例實例，方便各模組開發時參照格式。
-所有座標遵循 SPEC §3：13×13 usable grid，座標範圍 0-12。
+[impl-updated 2026-05-07] 所有座標遵循 SPEC §3：15×15 grid（含外牆），
+objects/agent_start 限制在 inner area 座標範圍 [1, 13]；外牆 (0, 14) 為 'W'。
 """
 
 import torch
@@ -23,19 +24,21 @@ from shared.types import (
 
 _example_llm_output_text = """\
 Grid:
-WWWWWWWWWWWWW
-W...........W
-W...........W
-W..WWWWW....W
-W..W........W
-W..W........W
-W...........W
-W......WWWW.W
-W...........W
-W...........W
-W...........W
-W...........W
-WWWWWWWWWWWWW
+WWWWWWWWWWWWWWW
+W.............W
+W.............W
+W..WWWWW......W
+W..W..........W
+W..W..........W
+W.............W
+W......WWWW...W
+W.............W
+W.............W
+W.............W
+W.............W
+W.............W
+W.............W
+WWWWWWWWWWWWWWW
 
 {
   "objects": [
@@ -43,10 +46,10 @@ WWWWWWWWWWWWW
     {"type": "door", "x": 6, "y": 3, "color": "yellow"},
     {"type": "ball", "x": 5, "y": 5, "color": "red"},
     {"type": "box", "x": 10, "y": 8, "color": "grey", "contains": {"type": "key", "color": "blue"}},
-    {"type": "lava", "x": 4, "y": 9},
-    {"type": "goal", "x": 11, "y": 11}
+    {"type": "lava", "x": 4, "y": 9}
   ],
-  "agent_start": {"x": 1, "y": 1, "dir": 1}
+  "agent_start": {"x": 1, "y": 1, "dir": 1},
+  "goal": 2
 }"""
 
 generation_output_example = GenerationOutput(
@@ -77,112 +80,126 @@ generation_output_example = GenerationOutput(
 # ===================================================================
 # LLM 輸出 ASCII grid (定義 W/.) + JSON (定義 objects + agent_start)
 # Parser 將 ASCII grid 轉為 grid 欄位，JSON 直接對應 objects / agent_start
-# 座標範圍: x ∈ [0, 12], y ∈ [0, 12]
+# [impl-updated 2026-05-07] 座標範圍: x ∈ [1, 13], y ∈ [1, 13]
+# (grid 為完整 15×15，含外牆 ring at row/col 0 與 14)
+
+# 共用的 grid template helper：完整 15×15 含外牆
+_OUTER_WALL = "W" * 15
+_INNER_FLOOR_ROW = "W" + "." * 13 + "W"
 
 level_config_simple = {
-    "width": 13,
-    "height": 13,
+    "width": 15,
+    "height": 15,
     "grid": [
-        ".............",
-        ".............",
-        "..WWW........",
-        "....W........",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
+        _OUTER_WALL,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        "W..WWW........W",
+        "W....W........W",
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _OUTER_WALL,
     ],
     "objects": [
         {"type": "key", "x": 1, "y": 5, "color": "yellow"},
         {"type": "door", "x": 4, "y": 4, "color": "yellow"},
-        {"type": "goal", "x": 12, "y": 12},
+        {"type": "ball", "x": 13, "y": 13, "color": "blue"},
     ],
-    "agent_start": {"x": 0, "y": 0, "dir": 0},
+    "agent_start": {"x": 1, "y": 1, "dir": 0},
+    "goal": 2,
 }
 
 level_config_with_lava = {
-    "width": 13,
-    "height": 13,
+    "width": 15,
+    "height": 15,
     "grid": [
-        ".............",
-        ".............",
-        ".............",
-        "WWW..........",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
+        _OUTER_WALL,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        "WWWWW.........W",  # 部分內牆 (col 0..4 = W)，外牆 col 14 維持 W
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _OUTER_WALL,
     ],
     "objects": [
         {"type": "lava", "x": 5, "y": 5},
         {"type": "lava", "x": 5, "y": 6},
         {"type": "key", "x": 1, "y": 8, "color": "blue"},
         {"type": "door", "x": 7, "y": 3, "color": "blue"},
-        {"type": "goal", "x": 12, "y": 12},
+        {"type": "ball", "x": 13, "y": 13, "color": "green"},
     ],
-    "agent_start": {"x": 0, "y": 0, "dir": 0},
+    "agent_start": {"x": 1, "y": 1, "dir": 0},
+    "goal": 2,
 }
 
 level_config_multi_key = {
-    "width": 13,
-    "height": 13,
+    "width": 15,
+    "height": 15,
     "grid": [
-        ".............",
-        ".............",
-        ".....W.......",
-        ".....W.......",
-        ".....W.......",
-        ".....W.......",
-        ".....W.......",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
-        ".............",
+        _OUTER_WALL,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        "W.....W.......W",
+        "W.....W.......W",
+        "W.....W.......W",
+        "W.....W.......W",
+        "W.....W.......W",
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _OUTER_WALL,
     ],
     "objects": [
         {"type": "key", "x": 2, "y": 1, "color": "yellow"},
         {"type": "key", "x": 10, "y": 10, "color": "blue"},
         {"type": "door", "x": 5, "y": 7, "color": "yellow"},
         {"type": "door", "x": 5, "y": 2, "color": "blue"},
-        {"type": "goal", "x": 12, "y": 0},
+        {"type": "box", "x": 13, "y": 1, "color": "red"},
     ],
-    "agent_start": {"x": 0, "y": 12, "dir": 0},
+    "agent_start": {"x": 1, "y": 13, "dir": 0},
+    "goal": 4,
 }
 
-# 涵蓋所有物件類型的範例：key, door (locked/closed/open), goal, lava, ball, box (含 contains)
+# 涵蓋所有物件類型的範例：key, door (locked/closed/open), lava, ball, box (含 contains)
 level_config_all_objects = {
-    "width": 13,
-    "height": 13,
+    "width": 15,
+    "height": 15,
     "grid": [
-        "WWWWWWWWWWWWW",
-        "W...........W",
-        "W...........W",
-        "W..WWWWW....W",
-        "W..W........W",
-        "W..W........W",
-        "W...........W",
-        "W......WWWW.W",
-        "W...........W",
-        "W...........W",
-        "W...........W",
-        "W...........W",
-        "WWWWWWWWWWWWW",
+        _OUTER_WALL,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        "W..WWWWW......W",
+        "W..W..........W",
+        "W..W..........W",
+        _INNER_FLOOR_ROW,
+        "W......WWWW...W",
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _INNER_FLOOR_ROW,
+        _OUTER_WALL,
     ],
     "objects": [
-        # goal — 終點（恰好一個）
-        {"type": "goal", "x": 11, "y": 11},
         # key — 撿起後用來開同色 locked door
         {"type": "key", "x": 2, "y": 1, "color": "yellow"},
         {"type": "key", "x": 9, "y": 9, "color": "blue"},
@@ -192,7 +209,7 @@ level_config_all_objects = {
         {"type": "door", "x": 7, "y": 7, "color": "blue", "state": "closed"},
         # door — open，已開啟的門，可直接通過
         {"type": "door", "x": 3, "y": 6, "color": "green", "state": "open"},
-        # ball — 可撿起或推動到相鄰空格
+        # ball — 可撿起或推動到相鄰空格（GoTo 目標）
         {"type": "ball", "x": 5, "y": 5, "color": "red"},
         # box — 可打開的箱子
         {"type": "box", "x": 8, "y": 2, "color": "purple"},
@@ -204,6 +221,7 @@ level_config_all_objects = {
         {"type": "lava", "x": 5, "y": 9},
     ],
     "agent_start": {"x": 1, "y": 1, "dir": 1},
+    "goal": 5,
 }
 
 
@@ -226,13 +244,13 @@ parse_fail_json_example = ParseResult(
 parse_fail_grid_example = ParseResult(
     success=False,
     level_config=None,
-    error_msg="Grid error: expected 13 rows, got 10",
+    error_msg="Grid error: expected 15 rows, got 10",
 )
 
 parse_fail_semantic_example = ParseResult(
     success=False,
     level_config=None,
-    error_msg="Semantic error: level must contain exactly one 'goal' object",
+    error_msg="Semantic error: 'goal' index out of range or points to non-target object",
 )
 
 parse_fail_overlap_example = ParseResult(
@@ -244,7 +262,7 @@ parse_fail_overlap_example = ParseResult(
 parse_fail_coord_example = ParseResult(
     success=False,
     level_config=None,
-    error_msg="Semantic error: object coordinate x=15 out of range [0, 12]",
+    error_msg="Semantic error: object coordinate x=14 out of inner range [1, 13]",
 )
 
 

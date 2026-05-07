@@ -28,9 +28,11 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-GRID_SIZE = 13
+GRID_SIZE = 15                  # full grid INCLUDING outer wall ring
+INNER_MIN, INNER_MAX = 1, 13    # objects/agent must be in [1, 13]; 0 and 14 are outer walls
 VALID_GRID_CHARS = {"W", "."}
-VALID_OBJECT_TYPES = {"wall", "key", "door", "ball", "box", "goal", "lava"}
+VALID_OBJECT_TYPES = {"wall", "key", "door", "ball", "box", "lava"}
+GOTO_TARGET_TYPES = {"key", "ball", "box"}
 VALID_COLORS = {"red", "green", "blue", "purple", "yellow", "grey"}
 
 
@@ -53,6 +55,10 @@ def simple_parse(text: str) -> dict:
     這是 S-3 sanity check 用的輕量 parser，不依賴 Module B。
     只做格式驗證，不做語義驗證（連通性等）。
 
+    對 reasoning 模型（Qwen3 thinking mode）有兩層防呆：
+      1. 砍掉 `</think>` 之前的所有內容（reasoning 區）
+      2. 用 `rfind("Grid:")` 取最後一次出現的位置（避免抓到推理草稿）
+
     Args:
         text: LLM 生成的原始文字。
 
@@ -61,8 +67,13 @@ def simple_parse(text: str) -> dict:
     """
     result = {"success": False, "error_msg": None, "grid": None, "objects": None, "agent_start": None}
 
-    # --- 提取 Grid ---
-    grid_start = text.find("Grid:")
+    # --- 砍除 reasoning 區（萬一 /no_think 沒生效） ---
+    think_close = text.rfind("</think>")
+    if think_close != -1:
+        text = text[think_close + len("</think>"):]
+
+    # --- 提取 Grid（用 rfind 抓最後一次，避免推理草稿干擾） ---
+    grid_start = text.rfind("Grid:")
     if grid_start == -1:
         result["error_msg"] = "Cannot find 'Grid:' section"
         return result
@@ -91,6 +102,20 @@ def simple_parse(text: str) -> dict:
     for i, line in enumerate(filtered_lines):
         if len(line) != GRID_SIZE:
             result["error_msg"] = f"Grid row {i}: expected {GRID_SIZE} chars, got {len(line)}"
+            return result
+
+    # --- 驗證外牆完整性 (outer ring 必須全是 'W') ---
+    top_row = filtered_lines[0]
+    bottom_row = filtered_lines[-1]
+    if any(c != "W" for c in top_row):
+        result["error_msg"] = f"Top row not all walls: {top_row!r}"
+        return result
+    if any(c != "W" for c in bottom_row):
+        result["error_msg"] = f"Bottom row not all walls: {bottom_row!r}"
+        return result
+    for i, line in enumerate(filtered_lines):
+        if line[0] != "W" or line[-1] != "W":
+            result["error_msg"] = f"Row {i} edges not walls: first={line[0]!r}, last={line[-1]!r}"
             return result
 
     result["grid"] = filtered_lines
@@ -134,8 +159,8 @@ def simple_parse(text: str) -> dict:
         result["error_msg"] = "'objects' is not a list"
         return result
 
-    # --- 驗證 objects ---
-    has_goal = False
+    # --- 驗證 objects（型別、座標範圍、不在 wall 上、不彼此重疊）---
+    occupied: dict[tuple[int, int], str] = {}  # (x, y) → 第一個佔用者的描述
     for obj in json_data["objects"]:
         if "type" not in obj:
             result["error_msg"] = f"Object missing 'type': {obj}"
@@ -146,28 +171,70 @@ def simple_parse(text: str) -> dict:
         if "x" not in obj or "y" not in obj:
             result["error_msg"] = f"Object missing x/y: {obj}"
             return result
-        if not (0 <= obj["x"] <= GRID_SIZE - 1 and 0 <= obj["y"] <= GRID_SIZE - 1):
-            result["error_msg"] = f"Object coordinate out of range: ({obj['x']}, {obj['y']})"
+        x, y = obj["x"], obj["y"]
+        if not (INNER_MIN <= x <= INNER_MAX and INNER_MIN <= y <= INNER_MAX):
+            result["error_msg"] = (
+                f"Object coordinate out of inner range [{INNER_MIN},{INNER_MAX}]: "
+                f"({x}, {y})"
+            )
             return result
-        if obj["type"] == "goal":
-            has_goal = True
+        if filtered_lines[y][x] == "W":
+            result["error_msg"] = (
+                f"Object {obj['type']} at ({x}, {y}) overlaps with internal wall"
+            )
+            return result
+        if (x, y) in occupied:
+            result["error_msg"] = (
+                f"Object {obj['type']} at ({x}, {y}) overlaps with "
+                f"{occupied[(x, y)]}"
+            )
+            return result
+        occupied[(x, y)] = obj["type"]
 
-    if not has_goal:
-        result["error_msg"] = "No 'goal' object found"
+    # --- 驗證 goal 欄位（0-based index 指向 GoTo 目標 object）---
+    objects_list = json_data["objects"]
+    if "goal" not in json_data:
+        result["error_msg"] = "JSON missing 'goal' field (0-based index into objects)"
+        return result
+    goal_idx = json_data["goal"]
+    if not isinstance(goal_idx, int) or goal_idx < 0 or goal_idx >= len(objects_list):
+        result["error_msg"] = (
+            f"'goal' index {goal_idx} out of range [0, {len(objects_list) - 1}]"
+        )
+        return result
+    goal_obj = objects_list[goal_idx]
+    if goal_obj["type"] not in GOTO_TARGET_TYPES:
+        result["error_msg"] = (
+            f"'goal' index {goal_idx} points to '{goal_obj['type']}', "
+            f"must be one of {GOTO_TARGET_TYPES}"
+        )
         return result
 
-    # --- 驗證 agent_start ---
+    # --- 驗證 agent_start（範圍、不在 wall 上、不與 object 重疊）---
     agent = json_data["agent_start"]
     if "x" not in agent or "y" not in agent:
         result["error_msg"] = f"agent_start missing x/y: {agent}"
         return result
-    if not (0 <= agent["x"] <= GRID_SIZE - 1 and 0 <= agent["y"] <= GRID_SIZE - 1):
-        result["error_msg"] = f"agent_start coordinate out of range: ({agent['x']}, {agent['y']})"
+    ax, ay = agent["x"], agent["y"]
+    if not (INNER_MIN <= ax <= INNER_MAX and INNER_MIN <= ay <= INNER_MAX):
+        result["error_msg"] = (
+            f"agent_start out of inner range [{INNER_MIN},{INNER_MAX}]: "
+            f"({ax}, {ay})"
+        )
+        return result
+    if filtered_lines[ay][ax] == "W":
+        result["error_msg"] = f"agent_start at ({ax}, {ay}) overlaps with internal wall"
+        return result
+    if (ax, ay) in occupied:
+        result["error_msg"] = (
+            f"agent_start at ({ax}, {ay}) overlaps with {occupied[(ax, ay)]}"
+        )
         return result
 
     result["success"] = True
     result["objects"] = json_data["objects"]
     result["agent_start"] = json_data["agent_start"]
+    result["goal"] = json_data["goal"]
     return result
 
 
@@ -198,7 +265,12 @@ def run_sanity_check(
         lora_alpha=config.get("lora_alpha", 128),
         lora_target_modules=config.get("lora_target_modules"),
         max_new_tokens=config.get("max_new_tokens", 2048),
-        temperature=config.get("temperature", 0.8),
+        temperature=config.get("temperature", 0.7),
+        top_p=config.get("top_p", 0.8),
+        top_k=config.get("top_k", 20),
+        presence_penalty=config.get("presence_penalty", 1.5),
+        enable_thinking=config.get("enable_thinking", False),
+        cache_dir=config.get("cache_dir"),
     )
 
     system_prompt = get_system_prompt()
@@ -217,7 +289,11 @@ def run_sanity_check(
         logger.info("Batch %d/%d (size=%d)...", batch_idx + 1, num_batches, current_batch_size)
 
         messages_list = [messages] * current_batch_size
-        gen_output = llm.generate_with_chat_template(messages_list)
+        # Sanity check 只看 texts；跳過 log_probs 可省一次全序列 forward
+        # + (B, seq, vocab=152K) 暫態（per MA-MEM-6）。
+        gen_output = llm.generate_with_chat_template(
+            messages_list, compute_log_probs=False,
+        )
 
         for i, text in enumerate(gen_output.texts):
             level_idx = batch_idx * batch_size + i

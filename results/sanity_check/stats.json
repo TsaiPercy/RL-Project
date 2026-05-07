@@ -1,0 +1,21 @@
+{
+  "total": 100,
+  "parsed": 4,
+  "parse_rate": 0.04,
+  "error_breakdown": {
+    "Object ball at (12, 2) overlaps with internal wall": 1,
+    "Object door at (6, 2) overlaps with internal wall": 1,
+    "Grid row 1": 52,
+    "Grid row 2": 14,
+    "Grid row 3": 4,
+    "Grid row 4": 5,
+    "Object door at (5, 5) overlaps with internal wall": 1,
+    "Object door at (4, 4) overlaps with internal wall": 2,
+    "Object key at (2, 2) overlaps with internal wall": 8,
+    "Object door at (5, 2) overlaps with internal wall": 3,
+    "Grid rows": 2,
+    "Object key at (12, 2) overlaps with internal wall": 1,
+    "Grid row 13": 1,
+    "Grid row 7": 1
+  }
+}
